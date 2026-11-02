@@ -10,6 +10,38 @@
     "deliveryWithInstall": true,
     "installationFree": false,
     "pages": "$profile:main_pages",
+    // ---- Izin aplikasi (requestedPermissions) ----
+    "requestPermissions": [
+      {
+        // Lokasi akurat — untuk menentukan lat/lon jadwal sholat.
+        "name": "ohos.permission.LOCATION",
+        "reason": "$string:perm_location_reason",
+        "usedScene": { "abilities": ["EntryAbility"], "when": "inuse" }
+      },
+      {
+        // Lokasi approximate — WAJIB ada bila LOCATION diminta.
+        "name": "ohos.permission.APPROXIMATELY_LOCATION",
+        "reason": "$string:perm_approx_location_reason",
+        "usedScene": { "abilities": ["EntryAbility"], "when": "inuse" }
+      },
+      {
+        // Akses internet ke api.aladhan.com.
+        "name": "ohos.permission.INTERNET"
+      },
+      {
+        // Menampilkan notifikasi pengingat sholat.
+        "name": "ohos.permission.NOTIFICATION",
+        "reason": "$string:perm_notification_reason",
+        "usedScene": { "abilities": ["EntryAbility"], "when": "always" }
+      },
+      {
+        // reminderAgentManager: menjadwalkan pengingat H-10 menit oleh sistem
+        // (tidak butuh proses aplikasi tetap hidup -> hemat baterai).
+        "name": "ohos.permission.PUBLISH_AGENT_REMINDER",
+        "reason": "$string:perm_reminder_reason",
+        "usedScene": { "abilities": ["EntryAbility"], "when": "always" }
+      }
+    ],
     "abilities": [
       {
         "name": "EntryAbility",

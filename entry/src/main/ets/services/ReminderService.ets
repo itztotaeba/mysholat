@@ -1,0 +1,138 @@
+/**
+ * ReminderService.ets
+ * -------------------
+ * Pengingat sholat 10 menit sebelum waktu menggunakan reminderAgentManager
+ * (WantAgentReminder — berjalan di proses sistem, TIDAK membutuhkan aplikasi
+ * tetap hidup -> jauh lebih hemat baterai dibanding setInterval/looping).
+ *
+ * Catatan wearable: Huawei Watch (HarmonyOS) mendukung ReminderAgent tipe
+ * timer/wantAgent untuk aplikasi yang sudah meminta izin notifikasi.
+ * Bila tipe reminder tidak didukung device, fallback ke notificationManager.
+ */
+import { reminderAgentManager } from '@kit.BackgroundTasksKit';
+import { notificationManager } from '@kit.NotificationKit';
+import { wantAgent, common } from '@kit.AbilityKit';
+import { BusinessError } from '@kit.BasicServicesKit';
+import { hilog } from '@kit.PerformanceAnalysisKit';
+import { PrayerScheduleItem } from '../model/PrayerModels.ets';
+import { REMINDER_BASE_ID, REMINDER_BEFORE_MINUTES } from '../common/Constants.ets';
+
+const DOMAIN: number = 0x0000;
+const TAG: string = 'MySholat|Reminder';
+
+export class ReminderService {
+  /** Pastikan kanal notifikasi aplikasi dibuat & user mengizinkan. */
+  static async ensureNotificationEnabled(): Promise<boolean> {
+    try {
+      const enabled: boolean = await notificationManager.isNotificationEnabled();
+      if (!enabled) {
+        // Minta izin notifikasi sekali (dialog sistem).
+        await notificationManager.requestEnableNotification();
+      }
+      return await notificationManager.isNotificationEnabled();
+    } catch (err) {
+      const e = err as BusinessError;
+      // 1600004: user menolak izin notifikasi
+      hilog.warn(DOMAIN, TAG, 'Notification not enabled: %{public}s', e.message);
+      return false;
+    }
+  }
+
+  /**
+   * Jadwalkan pengingat untuk SEMUA sholat yang waktunya masih nanti hari ini,
+   * masing-masing H-10 menit. Jadwal lama dibersihkan lebih dulu agar idempotent
+   * (dipanggil ulang saat refresh lokasi/tanggal tidak menghasilkan duplikat).
+   */
+  static async scheduleForToday(items: PrayerScheduleItem[]): Promise<void> {
+    await ReminderService.cancelAll();
+    const now: number = Date.now();
+
+    for (let i = 0; i < items.length; i++) {
+      const item: PrayerScheduleItem = items[i];
+      const triggerAtMs: number = item.timeMs - REMINDER_BEFORE_MINUTES * 60 * 1000;
+      const delaySec: number = Math.round((triggerAtMs - now) / 1000);
+
+      // Lewati sholat yang trigger-nya sudah lewat (mis. baru buka app jam 10 pagi).
+      if (delaySec <= 0) { continue; }
+
+      try {
+        const agent: number = await ReminderService.scheduleOne(item, delaySec, i);
+        hilog.info(DOMAIN, TAG, 'Scheduled reminder "%{public}s" in %{public}ds (id=%{public}d)',
+          item.name, delaySec, agent);
+      } catch (err) {
+        const e = err as BusinessError;
+        hilog.error(DOMAIN, TAG, 'schedule failed for %{public}s: code=%{public}d %{public}s',
+          item.name, e.code, e.message);
+      }
+    }
+  }
+
+  /**
+   * Satu trigger ReminderAgentInfo dengan WANT_AGENT: ketika trigger fired,
+   * sistem mengirim WantAgent -> EntryAbility (onNewWant) menampilkan
+   * notification lokal "Waktu sholat X dalam 10 menit".
+   */
+  private static async scheduleOne(item: PrayerScheduleItem, delaySec: number, idx: number): Promise<number> {
+    const info: reminderAgentManager.ReminderRequestAgent = {
+      reminderType: reminderAgentManager.ReminderType.REMINDER_TYPE_TIMER,
+      triggerTimeInSeconds: delaySec,
+      actionButton: [
+        { title: 'Ok', type: reminderAgentManager.ActionButtonType.ACTION_BUTTON_TYPE_CLOSE } as reminderAgentManager.ButtonOption
+      ],
+      maxActionButtons: 1,
+      wantAgent: {
+        pkgName: 'com.kinyo.mysholat',
+        abilityName: 'EntryAbility'
+      },
+      expiredContent: `Pengingat ${item.name} telah lewat`,
+      snoozeContent: 'Tunda',
+      notificationId: REMINDER_BASE_ID + idx,
+      slotType: 3 // SlotType.SLOT_SERVICE_INFORMATION
+    };
+    return await reminderAgentManager.publishReminder(info);
+  }
+
+  /** Fallback: kirim notification instan via notificationManager (mis. test UI). */
+  static async publishNow(title: string, text: string): Promise<void> {
+    try {
+      const notificationSlot: notificationManager.NotificationSlot =
+        { notificationType: notificationManager.SlotType.SOCIAL_COMMUNICATION };
+      const wantAgentInfo: wantAgent.WantAgentInfo = {
+        wants: [{ bundleName: 'com.kinyo.mysholat', abilityName: 'EntryAbility' }],
+        operationType: 0,
+        wantAgentCode: REMINDER_BASE_ID + 99
+      };
+      const agentObj = await wantAgent.getWantAgent(wantAgentInfo);
+      const request: notificationManager.NotificationRequest = {
+        id: REMINDER_BASE_ID + 100,
+        content: {
+          notificationContentType: notificationManager.ContentType.NOTIFICATION_CONTENT_BASIC_TEXT,
+          normal: { title: title, text: text, additionalText: 'MySholat' }
+        },
+        wantAgent: agentObj
+      };
+      await notificationManager.publish(request);
+    } catch (err) {
+      const e = err as BusinessError;
+      hilog.error(DOMAIN, TAG, 'publishNow failed: %{public}s', e.message);
+    }
+  }
+
+  /** Bersihkan semua reminder milik aplikasi (panggil saat ganti hari/refresh). */
+  static async cancelAll(): Promise<void> {
+    try {
+      const reminders: reminderAgentManager.ReminderInfo[] =
+        await reminderAgentManager.getValidReminders();
+      for (let i = 0; i < reminders.length; i++) {
+        const r: reminderAgentManager.ReminderInfo = reminders[i];
+        if (r.reminderId >= REMINDER_BASE_ID && r.reminderId < REMINDER_BASE_ID + 200) {
+          await reminderAgentManager.cancelReminder(r.reminderId);
+        }
+      }
+    } catch (err) {
+      const e = err as BusinessError;
+      // 2350002: tidak ada reminder aktif — abaikan.
+      hilog.warn(DOMAIN, TAG, 'cancelAll: %{public}s', e.message);
+    }
+  }
+}

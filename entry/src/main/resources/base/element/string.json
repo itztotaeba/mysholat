@@ -2,15 +2,31 @@
   "string": [
     {
       "name": "module_desc",
-      "value": "module description"
+      "value": "MySholat - Pengingat Sholat untuk smartwatch"
     },
     {
       "name": "EntryAbility_desc",
-      "value": "description"
+      "value": "Aplikasi pengingat waktu sholat 5 waktu berbasis lokasi"
     },
     {
       "name": "EntryAbility_label",
-      "value": "label"
+      "value": "MySholat"
+    },
+    {
+      "name": "perm_location_reason",
+      "value": "Untuk menampilkan jadwal sholat sesuai kota Anda (latitude/longitude)."
+    },
+    {
+      "name": "perm_approx_location_reason",
+      "value": "Untuk memperkirakan kota Anda agar jadwal sholat akurat."
+    },
+    {
+      "name": "perm_notification_reason",
+      "value": "Untuk mengirim pengingat 10 menit sebelum waktu sholat."
+    },
+    {
+      "name": "perm_reminder_reason",
+      "value": "Untuk menjadwalkan reminder sholat oleh sistem meski aplikasi tertutup."
     }
   ]
 }
