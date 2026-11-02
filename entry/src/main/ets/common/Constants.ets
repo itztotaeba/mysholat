@@ -51,23 +51,5 @@ export class AppColors {
   static readonly TEXT_SECONDARY: string = '#9AA7BD';
   static readonly DANGER: string = '#FF6B6B';       // pesan error
   static readonly PASSED: string = '#4A5568';       // waktu yang sudah lewat
-}
-
-/**
- * Ikon sederhana per waktu sholat.
- * Catatan: sebagian nama `sys.symbol` (sunrise/moonstars/location) tidak
- * tersedia di SDK wearable -> gunakan emoji ringan yang selalu dirender,
- * konsisten & hemat resource dibanding Image resource.
- */
-export class PrayerIcons {
-  static of(apiName: string): string {
-    switch (apiName) {
-      case 'Fajr': return '🌅';    // Subuh
-      case 'Dhuhr': return '☀️';   // Dzuhur
-      case 'Asr': return '🌤️';    // Ashar
-      case 'Maghrib': return '🌇'; // Maghrib
-      case 'Isha': return '🌙';    // Isya
-      default: return '🕐';
-    }
-  }
+  static readonly BORDER_DARK_BLUE: string = '#1E40AF'; // border kartu jadwal (biru tua)
 }
