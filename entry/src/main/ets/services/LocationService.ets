@@ -11,6 +11,13 @@ import { BusinessError } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { preference } from './PreferenceService.ets';
 import { GeoInfo } from '../model/PrayerModels.ets';
+
+/** Helper concrete-class agar tidak melanggar arkts-no-untyped-obj-literals. */
+class GeoInfoImpl {
+  latitude: number = 0;
+  longitude: number = 0;
+  cityName: string = '';
+}
 import { DEFAULT_CITY, DEFAULT_LAT, DEFAULT_LON, PREF_KEY_CITY, PREF_KEY_LAT, PREF_KEY_LON } from '../common/Constants.ets';
 
 const DOMAIN: number = 0x0000;
@@ -23,11 +30,19 @@ export class LocationService {
    */
   static async getCurrentLocation(): Promise<GeoInfo> {
     try {
+      // Guard: jika Location Service mati, getCurrentLocation akan melempar 3301200 —
+      // langsung fallback ke cache/default agar tidak membuang waktu tunggu.
+      if (!geoLocationManager.isLocationEnabled()) {
+        hilog.warn(DOMAIN, TAG, 'Location service disabled, using cache/default.');
+        return LocationService.getCachedOrDefault();
+      }
       const request: geoLocationManager.SingleLocationRequest = {
-        locatingTimeout: 10,          // detik
-        locationAccuracy: geoLocationManager.LocationAccuracyLocationBasedNavigation
+        locatingTimeoutMs: 10000,     // milidetik (API baru; dulu `locatingTimeout` dalam detik)
+        // Enum LocationAccuracy tidak tersedia di beberapa versi SDK wearable,
+        // jadi gunakan angka literal (2 = accuracy tinggi / navigation-grade).
+        locationAccuracy: 2
       };
-      const location: geoLocationManager.Location = await geoLocationManager.getCurrentLocation(request);
+      const location: geoLocationManager.LocationResult = await geoLocationManager.getCurrentLocation(request);
       hilog.info(DOMAIN, TAG, 'Got location: %{public}f, %{public}f', location.latitude, location.longitude);
 
       // Simpan sebagai cache untuk mode offline berikutnya.
@@ -35,7 +50,11 @@ export class LocationService {
       await preference.setNumber(PREF_KEY_LON, location.longitude);
 
       const cityName: string = await LocationService.reverseGeocode(location.latitude, location.longitude);
-      return { latitude: location.latitude, longitude: location.longitude, cityName: cityName };
+      const info: GeoInfoImpl = new GeoInfoImpl();
+      info.latitude = location.latitude;
+      info.longitude = location.longitude;
+      info.cityName = cityName;
+      return info;
     } catch (err) {
       const e = err as BusinessError;
       // 3301100: lokasi timeout / 3301200: permission belum granted
@@ -47,15 +66,18 @@ export class LocationService {
   /** Reverse geocoding -> "Kota / Kabupaten". Gagal -> pakai cache/default. */
   private static async reverseGeocode(lat: number, lon: number): Promise<string> {
     try {
-      const position: geoLocationManager.Position = { latitude: lat, longitude: lon };
+      // ReverseGeoCodeRequest memakai field latitude/longitude langsung
+      // (bukan objek `position`, dan tipe `Position` memang tidak diekspor SDK).
+      const request: geoLocationManager.ReverseGeoCodeRequest = {
+        latitude: lat,
+        longitude: lon,
+        locale: 'id',
+        maxItems: 1
+      };
       const list: geoLocationManager.GeoAddress[] =
-        await geoLocationManager.getAddressesFromLocation({
-          locale: 'id',
-          maxItems: 1,
-          position: position
-        });
+        await geoLocationManager.getAddressesFromLocation(request);
       if (list.length > 0) {
-        const addr = list[0];
+        const addr: geoLocationManager.GeoAddress = list[0];
         const city: string = addr.locality ?? addr.subLocality ?? addr.administrativeArea ?? '';
         if (city.length > 0) {
           await preference.setString(PREF_KEY_CITY, city);
@@ -75,6 +97,10 @@ export class LocationService {
     const lat: number = (await preference.getNumber(PREF_KEY_LAT, DEFAULT_LAT)) as number;
     const lon: number = (await preference.getNumber(PREF_KEY_LON, DEFAULT_LON)) as number;
     const city: string = (await preference.getString(PREF_KEY_CITY, DEFAULT_CITY)) as string;
-    return { latitude: lat, longitude: lon, cityName: city };
+    const info: GeoInfoImpl = new GeoInfoImpl();
+    info.latitude = lat;
+    info.longitude = lon;
+    info.cityName = city;
+    return info;
   }
 }
