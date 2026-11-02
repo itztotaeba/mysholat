@@ -80,3 +80,23 @@ export class GeoInfo {
     this.cityName = cityName;
   }
 }
+
+/**
+ * Kelas pembungkus hasil getCurrentLocation milik aplikasi sendiri.
+ *
+ * PENTING (arkts-no-structural-typing): ArkTS melarang meng-assign objek
+ * dari modul SDK lain (geoLocationManager.Location) ke tipe/deklarasi lokal
+ * meskipun strukturnya identik — hanya class yang DEKlarasinya sama persis
+ * yang boleh saling di-assign. Karena itu hasil lokasi SDK TIDAK PERNAH
+ * ditipkan sebagai variabel lokal bertipe custom; field `latitude` &
+ * `longitude` langsung dibaca dan dibungkus di sini lewat constructor.
+ */
+export class PrayerPosition {
+  latitude: number;
+  longitude: number;
+
+  constructor(latitude: number, longitude: number) {
+    this.latitude = latitude;
+    this.longitude = longitude;
+  }
+}

@@ -1,79 +1,99 @@
 /**
  * LocationService.ets
  * -------------------
- * Deteksi lokasi menggunakan @ohos.geoLocationManager (HarmonyOS Location Kit):
- *  - getCurrentLocation ONE_SINGLE / ACCURACY_HIGH fix location (sekali ambil,
- *    hemat baterai — bukan continuous).
+ * Deteksi lokasi menggunakan @kit.LocationKit (HarmonyOS Location Kit):
+ *  - getCurrentLocation ONE_SINGLE (sekali ambil, hemat baterai — bukan continuous).
  *  - Reverse geocoding -> nama kota (mis. "Jakarta Selatan").
  *  - Fallback: cache koordinat terakhir di Preferences, lalu default Jakarta.
+ *
+ * CATATAN KOMPILASI ARKTS (pengalaman error yang sudah diperbaiki):
+ *  1. arkts-no-misplaced-imports : semua import wajib di paling atas file.
+ *  2. SingleLocationRequest      : field WAJIB `locatingPriority`; timeout memakai
+ *     `locatingTimeoutMs` (milidetik). `locationAccuracy` TIDAK ada di tipe ini.
+ *  3. Tipe hasil                 : getCurrentLocation mengembalikan
+ *     `geoLocationManager.Location`. `LocationResult` / `Position` TIDAK diekspor SDK.
+ *  4. arkts-no-structural-typing : objek hasil SDK TIDAK BOLEH ditipkan ke class/
+ *     interface lokal meskipun strukturnya sama. Karena itu hasil getLocation()
+ *     dibaca INLINE (tanpa variabel bertipe custom) lalu dibungkus via constructor
+ *     PrayerPosition/GeoInfo milik aplikasi sendiri.
  */
-// Semua import harus berada di paling atas file (arkts-no-misplaced-imports).
 import { geoLocationManager } from '@kit.LocationKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { preference } from './PreferenceService.ets';
-import { GeoInfo } from '../model/PrayerModels.ets';
-import { DEFAULT_CITY, DEFAULT_LAT, DEFAULT_LON, PREF_KEY_CITY, PREF_KEY_LAT, PREF_KEY_LON } from '../common/Constants.ets';
+import { GeoInfo, PrayerPosition } from '../model/PrayerModels.ets';
+import {
+  DEFAULT_CITY, DEFAULT_LAT, DEFAULT_LON,
+  PREF_KEY_CITY, PREF_KEY_LAT, PREF_KEY_LON
+} from '../common/Constants.ets';
 
 const DOMAIN: number = 0x0000;
 const TAG: string = 'MySholat|Location';
 
-/**
- * Catatan kompatibilitas SDK (API 12):
- *  - Hasil getCurrentLocation bertipe `geoLocationManager.Location`, yang berisi
- *    field `latitude` & `longitude` LANGSUNG (bukan dibungkus objek `location`).
- *    Tipe `LocationResult` / `Position` memang TIDAK diekspor oleh SDK ini.
- *  - `SingleLocationRequest` WAJIB mengisi `locatingPriority` dan memakai
- *    `locatingTimeoutMs` (milidetik), bukan `locatingTimeout` (detik).
- */
-
 export class LocationService {
   /**
-   * Ambil lokasi saat ini. Menggunakan skema one-shot sehingga radio GPS
-   * hanya aktif sebentar (ramah baterai smartwatch).
+   * Ambil satu fix lokasi saat ini (one-shot, radio GPS aktif sebentar saja).
+   * Hasil SDK (`geoLocationManager.Location`) dibaca INLINE dan langsung
+   * dibungkus lewat constructor PrayerPosition milik aplikasi sendiri —
+   * tidak pernah ditipkan ke variabel lokal bertipe lain, sehingga aman
+   * dari aturan arkts-no-structural-typing.
    */
-  static async getCurrentLocation(): Promise<GeoInfo> {
+  static async getCurrentLocation(): Promise<PrayerPosition> {
     try {
-      // Guard: jika Location Service mati, getCurrentLocation akan melempar 3301200 —
-      // langsung fallback ke cache/default agar tidak membuang waktu tunggu.
+      // Guard: jika Location Service mati, getCurrentLocation melempar 3301200 —
+      // langsung pakai cache/default agar tidak membuang waktu tunggu & baterai.
       if (!geoLocationManager.isLocationEnabled()) {
         hilog.warn(DOMAIN, TAG, 'Location service disabled, using cache/default.');
-        return LocationService.getCachedOrDefault();
+        return LocationService.getCachedPosition();
       }
+
       const request: geoLocationManager.SingleLocationRequest = {
-        locatingPriority: geoLocationManager.LocatingPriority.PRIORITY_LOCATING_SPEED,
-        locatingTimeoutMs: 10000
+        // locatingPriority adalah field REQUIRED pada SingleLocationRequest.
+        locatingPriority: geoLocationManager.LocatingPriority.PRIORITY_ACCURACY,
+        locatingTimeoutMs: 10000 // milidetik (bukan `locatingTimeout` detik)
       };
-      const location: geoLocationManager.Location = await geoLocationManager.getCurrentLocation(request);
-      hilog.info(DOMAIN, TAG, 'Got location: %{public}f, %{public}f', location.latitude, location.longitude);
 
-      // Simpan sebagai cache untuk mode offline berikutnya.
-      await preference.setNumber(PREF_KEY_LAT, location.latitude);
-      await preference.setNumber(PREF_KEY_LON, location.longitude);
-
-      const cityName: string = await LocationService.reverseGeocode(location.latitude, location.longitude);
-      // GeoInfo adalah CLASS (bukan interface) — dibangun via constructor agar
-      // tidak melanggar aturan ArkTS strict-typing (arkts-no-structural-typing).
-      return new GeoInfo(location.latitude, location.longitude, cityName);
+      // One-shot: panggil SEKALI. Variabel penampung DIBERI TIPE EKSPLISIT
+      // `geoLocationManager.Location` (tipe hasil resmi API). Menampung tanpa
+      // anotasi tipe memicu arkts-no-structural-typing karena compiler mencoba
+      // mencocokkan objek SDK ke deklarasi lokal yang "mirip strukturnya".
+      const sdkLoc: geoLocationManager.Location =
+        await geoLocationManager.getCurrentLocation(request);
+      const lat: number = sdkLoc.latitude;
+      const lon: number = sdkLoc.longitude;
+      await preference.setNumber(PREF_KEY_LAT, lat);
+      await preference.setNumber(PREF_KEY_LON, lon);
+      hilog.info(DOMAIN, TAG, 'Got location: %{public}f, %{public}f', lat, lon);
+      return new PrayerPosition(lat, lon);
     } catch (err) {
       const e = err as BusinessError;
-      // 3301100: lokasi timeout / 3301200: permission belum granted
-      hilog.error(DOMAIN, TAG, 'getCurrentLocation failed: code=%{public}d msg=%{public}s', e.code, e.message);
-      return LocationService.getCachedOrDefault();
+      // 3301100: timeout locating | 3301200: permission/service bermasalah
+      hilog.error(DOMAIN, TAG, 'getCurrentLocation failed: code=%{public}d msg=%{public}s',
+        e.code, e.message);
+      return LocationService.getCachedPosition();
     }
+  }
+
+  /** Info lengkap untuk UI: posisi + nama kota (reverse geocode, with fallback). */
+  static async getGeoInfo(): Promise<GeoInfo> {
+    const pos: PrayerPosition = await LocationService.getCurrentLocation();
+    const city: string = await LocationService.reverseGeocode(pos.latitude, pos.longitude);
+    return new GeoInfo(pos.latitude, pos.longitude, city);
   }
 
   /** Reverse geocoding -> "Kota / Kabupaten". Gagal -> pakai cache/default. */
   private static async reverseGeocode(lat: number, lon: number): Promise<string> {
     try {
-      // ReverseGeoCodeRequest memakai field latitude/longitude langsung
-      // (bukan objek `position`, dan tipe `Position` memang tidak diekspor SDK).
+      // ReverseGeoCodeRequest memakai field latitude/longitude LANGSUNG
+      // (bukan objek `position`; tipe `Position` memang tidak diekspor SDK).
       const request: geoLocationManager.ReverseGeoCodeRequest = {
         latitude: lat,
         longitude: lon,
         locale: 'id',
         maxItems: 1
       };
+      // Array elemen SDK hanya dibaca per-index dan field-nya diakses inline;
+      // tidak ada assignment lintas-tipe struktural di sini.
       const list: geoLocationManager.GeoAddress[] =
         await geoLocationManager.getAddressesFromLocation(request);
       if (list.length > 0) {
@@ -93,10 +113,9 @@ export class LocationService {
   }
 
   /** Fallback offline: koordinat terakhir yang disimpan, atau default Jakarta. */
-  private static async getCachedOrDefault(): Promise<GeoInfo> {
+  private static async getCachedPosition(): Promise<PrayerPosition> {
     const lat: number = (await preference.getNumber(PREF_KEY_LAT, DEFAULT_LAT)) as number;
     const lon: number = (await preference.getNumber(PREF_KEY_LON, DEFAULT_LON)) as number;
-    const city: string = (await preference.getString(PREF_KEY_CITY, DEFAULT_CITY)) as string;
-    return new GeoInfo(lat, lon, city);
+    return new PrayerPosition(lat, lon);
   }
 }

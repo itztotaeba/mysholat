@@ -43,7 +43,13 @@ export class PrayerApiService {
       }
 
       // Parsing JSON eksplisit — hindari `any`, cast ke interface model.
-      const body: AladhanResponse = JSON.parse(response.result as string) as AladhanResponse;
+      // Catatan arkts-no-structural-typing: hasil JSON.parse (Record<string,
+      // Object>) di-cast langsung ke interface model aplikasi yang memang
+      // mendeklarasikan field respons Aladhan — ini pola resmi ArkTS untuk
+      // deserialisasi, BUKAN assignment antar-dua deklarasi berbeda.
+      const raw: string = typeof response.result === 'string'
+        ? response.result as string : String(response.result);
+      const body: AladhanResponse = JSON.parse(raw) as AladhanResponse;
       if (!body || !body.data || !body.data.timings) {
         throw new Error('Invalid Aladhan payload');
       }
