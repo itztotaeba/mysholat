@@ -5,23 +5,21 @@
  *  - Layar bulat: padding simetris, radius besar, tanpa elemen berlebihan.
  *  - Bagian PALING ATAS: kartu "Sholat Berikutnya" dengan warna aksen mencolok
  *    + hitungan mundur (countdown).
- *  - List 5 waktu sholat: font besar, kontras tinggi, ikon sederhana (SymbolGlyph).
+ *  - List 5 waktu sholat: font besar, kontras tinggi, ikon sederhana (emoji).
  *  - Scroll vertikal memakai komponen List.
  */
 import { common } from '@kit.AbilityKit';
+import { UIContext } from '@kit.ArkUI';
 import { PrayerViewModel, LoadState } from '../viewmodel/PrayerViewModel.ets';
 import { PrayerScheduleItem } from '../model/PrayerModels.ets';
-import { AppColors } from '../common/Constants.ets';
+import { AppColors, PrayerIcons } from '../common/Constants.ets';
 
-/** Ikon simbolik sederhana per waktu sholat (SymbolGlyph HarmonyOS). */
-function prayerIcon(apiName: string): Resource {
-  switch (apiName) {
-    case 'Fajr': return $r('sys.symbol.sunrise');
-    case 'Dhuhr': return $r('sys.symbol.sun_max');
-    case 'Asr': return $r('sys.symbol.sunset');
-    case 'Maghrib': return $r('sys.symbol.moonstars');
-    case 'Isha': return $r('sys.symbol.moon');
-    default: return $r('sys.symbol.clock');
+/** Context UIAbility via getUIContext() — pengganti `getContext` yang deprecated. */
+function abilityContextOf(ctx: UIContext): common.UIAbilityContext | undefined {
+  try {
+    return ctx.getHostContext() as common.UIAbilityContext;
+  } catch (e) {
+    return undefined;
   }
 }
 
@@ -32,7 +30,8 @@ struct Index {
   @State vm: PrayerViewModel = new PrayerViewModel();
 
   aboutToAppear(): void {
-    const context: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
+    // getContext() deprecated -> gunakan this.getUIContext().getHostContext() (API 10+).
+    const context: common.UIAbilityContext | undefined = abilityContextOf(this.getUIContext());
     this.vm.bootstrap(context);
   }
 
@@ -53,7 +52,7 @@ struct Index {
     Column() {
       // ===== HEADER: lokasi user (hasil reverse geocoding) =====
       Row() {
-        SymbolGlyph($r('sys.symbol.location')).fontSize(14).fontColor([AppColors.TEXT_SECONDARY])
+        Text('📍').fontSize(13)
         Text(this.vm.cityName)
           .fontSize(13)
           .fontColor(AppColors.TEXT_SECONDARY)
@@ -134,11 +133,9 @@ struct Index {
   @Builder
   prayerRow(item: PrayerScheduleItem) {
     Row() {
-      // Ikon sederhana per waktu sholat.
-      SymbolGlyph(prayerIcon(item.apiName))
-        .fontSize(18)
-        .fontColor([item.isNext ? AppColors.ACCENT :
-          (item.isPassed ? AppColors.PASSED : AppColors.TEXT_PRIMARY)])
+      // Ikon sederhana per waktu sholat (emoji — selalu tersedia di SDK wearable).
+      Text(PrayerIcons.of(item.apiName))
+        .fontSize(16)
 
       Text(item.name)
         .fontSize(16)
@@ -165,9 +162,7 @@ struct Index {
   @Builder
   errorBanner() {
     Column({ space: 6 }) {
-      SymbolGlyph($r('sys.symbol.exclamationmark_circle'))
-        .fontSize(18)
-        .fontColor([AppColors.DANGER])
+      Text('⚠️').fontSize(16)
       Text(this.vm.errorMessage)
         .fontSize(11)
         .fontColor(AppColors.DANGER)
@@ -182,7 +177,7 @@ struct Index {
           .backgroundColor(AppColors.ACCENT)
           .fontColor(AppColors.BG)
           .onClick(() => {
-            const ctx: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
+            const ctx: common.UIAbilityContext | undefined = abilityContextOf(this.getUIContext());
             this.vm.retry(ctx);
           })
       }

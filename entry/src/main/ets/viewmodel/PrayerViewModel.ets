@@ -51,12 +51,15 @@ export class PrayerViewModel {
   private refreshTimerId: number = -1;
 
   /** Entry point dari aboutToAppear/onPageShow. */
-  async bootstrap(context: common.UIAbilityContext): Promise<void> {
+  async bootstrap(context?: common.UIAbilityContext): Promise<void> {
     this.loadState = LoadState.LOADING;
     this.errorMessage = '';
 
     // 1) ONBOARDING PERMISSION — minta izin lokasi saat pertama dibuka.
-    const granted: boolean = await PermissionService.requestLocationPermissions(context);
+    // Bila konteks tak tersedia, anggap permission sudah pernah diminta/granted.
+    const granted: boolean = context !== undefined
+      ? await PermissionService.requestLocationPermissions(context)
+      : true;
     if (!granted) {
       this.loadState = LoadState.ERROR_NO_PERMISSION;
       this.errorMessage = 'Izin lokasi ditolak. Aktifkan lewat Settings > Apps > MySholat agar jadwal sesuai kotamu.';
@@ -69,22 +72,24 @@ export class PrayerViewModel {
     await ReminderService.ensureNotificationEnabled();
 
     // 2) DETEKSI LOKASI (+ reverse geocoding nama kota).
-    this.geo = await LocationService.getCurrentLocation();
-    this.cityName = this.geo.cityName;
+    const geo: GeoInfo = await LocationService.getCurrentLocation();
+    this.geo = geo;
+    this.cityName = geo.cityName;
 
     // 3) AMBIL JADWAL dari API Aladhan (method=20 Kemenag RI).
     await this.fetchScheduleAndRemind();
 
     // 4) Refresh berkala hemat baterai (30 mnt) selama foreground.
-    this.startPeriodicRefresh(context);
+    this.startPeriodicRefresh();
   }
 
   /** Ambil jadwal + jadwalkan reminder H-10 menit. */
   private async fetchScheduleAndRemind(): Promise<void> {
-    if (!this.geo) { return; }
+    const geo: GeoInfo | null = this.geo;
+    if (geo === null) { return; }
     try {
       const items: PrayerScheduleItem[] =
-        await PrayerApiService.fetchTodayTimings(this.geo.latitude, this.geo.longitude);
+        await PrayerApiService.fetchTodayTimings(geo.latitude, geo.longitude);
       this.schedule = items;
       this.loadState = LoadState.READY;
       this.recomputeNextPrayer();
@@ -137,7 +142,7 @@ export class PrayerViewModel {
   }
 
   /** Retry manual dari tombol di UI (saat ERROR_API). */
-  async retry(context: common.UIAbilityContext): Promise<void> {
+  async retry(context?: common.UIAbilityContext): Promise<void> {
     await this.bootstrap(context);
   }
 
@@ -174,7 +179,7 @@ export class PrayerViewModel {
     this.onPageHide();
   }
 
-  private startPeriodicRefresh(context: common.UIAbilityContext): void {
+  private startPeriodicRefresh(): void {
     if (this.refreshTimerId !== -1) { clearInterval(this.refreshTimerId); }
     // Interval besar (30 mnt) hanya aktif saat foreground; dibersihkan di onPageHide.
     this.refreshTimerId = setInterval(() => {

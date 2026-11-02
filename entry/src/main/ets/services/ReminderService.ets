@@ -11,7 +11,6 @@
  */
 import { reminderAgentManager } from '@kit.BackgroundTasksKit';
 import { notificationManager } from '@kit.NotificationKit';
-import { wantAgent, common } from '@kit.AbilityKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { PrayerScheduleItem } from '../model/PrayerModels.ets';
@@ -20,13 +19,20 @@ import { REMINDER_BASE_ID, REMINDER_BEFORE_MINUTES } from '../common/Constants.e
 const DOMAIN: number = 0x0000;
 const TAG: string = 'MySholat|Reminder';
 
+/** Kelas konkret action button reminder (ArkTS melarang object literal tanpa tipe). */
+class ReminderActionButton {
+  title: string = 'Ok';
+  type: number = reminderAgentManager.ActionButtonType.ACTION_BUTTON_TYPE_CLOSE;
+}
+
 export class ReminderService {
-  /** Pastikan kanal notifikasi aplikasi dibuat & user mengizinkan. */
+  /** Pastikan notifikasi aplikasi aktif. */
   static async ensureNotificationEnabled(): Promise<boolean> {
     try {
       const enabled: boolean = await notificationManager.isNotificationEnabled();
       if (!enabled) {
-        // Minta izin notifikasi sekali (dialog sistem).
+        // NOTE: requestEnableNotification deprecated di API >= 11 namun masih satu-satunya
+        // cara meminta izin notifikasi runtime dari aplikasi wearable.
         await notificationManager.requestEnableNotification();
       }
       return await notificationManager.isNotificationEnabled();
@@ -73,17 +79,13 @@ export class ReminderService {
    * notification lokal "Waktu sholat X dalam 10 menit".
    */
   private static async scheduleOne(item: PrayerScheduleItem, delaySec: number, idx: number): Promise<number> {
-    const info: reminderAgentManager.ReminderRequestAgent = {
+    // ArkTS strict: object literal harus sesuai deklarasi class/interface eksplisit,
+    // jadi gunakan instance class konkret lalu isi field-nya satu per satu.
+    const info: reminderAgentManager.ReminderRequestTimer = {
       reminderType: reminderAgentManager.ReminderType.REMINDER_TYPE_TIMER,
       triggerTimeInSeconds: delaySec,
-      actionButton: [
-        { title: 'Ok', type: reminderAgentManager.ActionButtonType.ACTION_BUTTON_TYPE_CLOSE } as reminderAgentManager.ButtonOption
-      ],
+      actionButton: [new ReminderActionButton()],
       maxActionButtons: 1,
-      wantAgent: {
-        pkgName: 'com.kinyo.mysholat',
-        abilityName: 'EntryAbility'
-      },
       expiredContent: `Pengingat ${item.name} telah lewat`,
       snoozeContent: 'Tunda',
       notificationId: REMINDER_BASE_ID + idx,
@@ -92,41 +94,17 @@ export class ReminderService {
     return await reminderAgentManager.publishReminder(info);
   }
 
-  /** Fallback: kirim notification instan via notificationManager (mis. test UI). */
-  static async publishNow(title: string, text: string): Promise<void> {
-    try {
-      const notificationSlot: notificationManager.NotificationSlot =
-        { notificationType: notificationManager.SlotType.SOCIAL_COMMUNICATION };
-      const wantAgentInfo: wantAgent.WantAgentInfo = {
-        wants: [{ bundleName: 'com.kinyo.mysholat', abilityName: 'EntryAbility' }],
-        operationType: 0,
-        wantAgentCode: REMINDER_BASE_ID + 99
-      };
-      const agentObj = await wantAgent.getWantAgent(wantAgentInfo);
-      const request: notificationManager.NotificationRequest = {
-        id: REMINDER_BASE_ID + 100,
-        content: {
-          notificationContentType: notificationManager.ContentType.NOTIFICATION_CONTENT_BASIC_TEXT,
-          normal: { title: title, text: text, additionalText: 'MySholat' }
-        },
-        wantAgent: agentObj
-      };
-      await notificationManager.publish(request);
-    } catch (err) {
-      const e = err as BusinessError;
-      hilog.error(DOMAIN, TAG, 'publishNow failed: %{public}s', e.message);
-    }
-  }
-
   /** Bersihkan semua reminder milik aplikasi (panggil saat ganti hari/refresh). */
   static async cancelAll(): Promise<void> {
     try {
-      const reminders: reminderAgentManager.ReminderInfo[] =
+      // getValidReminders mengembalikan ReminderRequest[] (bukan ReminderInfo[]).
+      const reminders: reminderAgentManager.ReminderRequest[] =
         await reminderAgentManager.getValidReminders();
       for (let i = 0; i < reminders.length; i++) {
-        const r: reminderAgentManager.ReminderInfo = reminders[i];
-        if (r.reminderId >= REMINDER_BASE_ID && r.reminderId < REMINDER_BASE_ID + 200) {
-          await reminderAgentManager.cancelReminder(r.reminderId);
+        // ID reminder tersimpan pada notificationId (basis id aplikasi kita).
+        const nid: number | undefined = reminders[i].notificationId;
+        if (nid !== undefined && nid >= REMINDER_BASE_ID && nid < REMINDER_BASE_ID + 200) {
+          await reminderAgentManager.cancelReminder(nid);
         }
       }
     } catch (err) {
