@@ -85,7 +85,8 @@ export class ReminderService {
       reminderType: reminderAgentManager.ReminderType.REMINDER_TYPE_TIMER,
       triggerTimeInSeconds: delaySec,
       actionButton: [new ReminderActionButton()],
-      maxActionButtons: 1,
+      // maxActionButtons TIDAK termasuk field ReminderRequestTimer pada SDK ini
+      // (jumlah tombol ditentukan dari panjang array actionButton) — hence error.
       expiredContent: `Pengingat ${item.name} telah lewat`,
       snoozeContent: 'Tunda',
       notificationId: REMINDER_BASE_ID + idx,
