@@ -12,7 +12,7 @@ import { common } from '@kit.AbilityKit';
 import { UIContext } from '@kit.ArkUI';
 import { PrayerViewModel, LoadState } from '../viewmodel/PrayerViewModel.ets';
 import { PrayerScheduleItem } from '../model/PrayerModels.ets';
-import { AppColors, PrayerIcons } from '../common/Constants.ets';
+import { AppColors } from '../common/Constants.ets';
 
 /** Context UIAbility via getUIContext() — pengganti `getContext` yang deprecated. */
 function abilityContextOf(ctx: UIContext): common.UIAbilityContext | undefined {
@@ -52,13 +52,11 @@ struct Index {
     Column() {
       // ===== HEADER: lokasi user (hasil reverse geocoding) =====
       Row() {
-        Text('📍').fontSize(13)
         Text(this.vm.cityName)
           .fontSize(13)
           .fontColor(AppColors.TEXT_SECONDARY)
           .maxLines(1)
           .textOverflow({ overflow: TextOverflow.Ellipsis })
-          .margin({ left: 4 })
       }
       .justifyContent(FlexAlign.Center)
       .width('100%')
@@ -126,22 +124,18 @@ struct Index {
     .padding({ top: 10, bottom: 10 })
     .backgroundColor(AppColors.CARD)
     .borderRadius(20)
-    .border({ width: 1, color: AppColors.ACCENT, style: BorderStyle.Solid })
+    .border({ width: 1, color: AppColors.BORDER_DARK_BLUE, style: BorderStyle.Solid })
     .margin({ top: 8, bottom: 6 })
   }
 
   @Builder
   prayerRow(item: PrayerScheduleItem) {
     Row() {
-      // Ikon sederhana per waktu sholat (emoji — selalu tersedia di SDK wearable).
-      Text(PrayerIcons.of(item.apiName))
-        .fontSize(16)
-
       Text(item.name)
         .fontSize(16)
         .fontWeight(item.isNext ? FontWeight.Bold : FontWeight.Normal)
         .fontColor(item.isPassed ? AppColors.PASSED : AppColors.TEXT_PRIMARY)
-        .margin({ left: 10 })
+        .margin({ left: 4 })
         .layoutWeight(1)
 
       Text(item.time)
@@ -156,13 +150,12 @@ struct Index {
     .padding({ left: 14, right: 14 })
     .backgroundColor(item.isNext ? AppColors.CARD : Color.Transparent)
     .borderRadius(14)
-    .border(item.isNext ? { width: 1, color: AppColors.ACCENT } : { width: 0 })
+    .border({ width: 1, color: AppColors.BORDER_DARK_BLUE })
   }
 
   @Builder
   errorBanner() {
     Column({ space: 6 }) {
-      Text('⚠️').fontSize(16)
       Text(this.vm.errorMessage)
         .fontSize(11)
         .fontColor(AppColors.DANGER)
