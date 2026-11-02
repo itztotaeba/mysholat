@@ -6,11 +6,26 @@
  *  - Reverse geocoding -> nama kota (mis. "Jakarta Selatan").
  *  - Fallback: cache koordinat terakhir di Preferences, lalu default Jakarta.
  */
+// Semua import harus berada di paling atas file (arkts-no-misplaced-imports).
 import { geoLocationManager } from '@kit.LocationKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { preference } from './PreferenceService.ets';
 import { GeoInfo } from '../model/PrayerModels.ets';
+import { DEFAULT_CITY, DEFAULT_LAT, DEFAULT_LON, PREF_KEY_CITY, PREF_KEY_LAT, PREF_KEY_LON } from '../common/Constants.ets';
+
+const DOMAIN: number = 0x0000;
+const TAG: string = 'MySholat|Location';
+
+/**
+ * Bentuk minimal hasil getCurrentLocation. SDK API 12 TIDAK mengekspor tipe
+ * `LocationResult` / `Position`, jadi kita deklarasikan interface sendiri yang
+ * memuat field yang benar-benar dipakai (latitude & longitude).
+ */
+interface PrayerPosition {
+  latitude: number;
+  longitude: number;
+}
 
 /** Helper concrete-class agar tidak melanggar arkts-no-untyped-obj-literals. */
 class GeoInfoImpl {
@@ -18,10 +33,6 @@ class GeoInfoImpl {
   longitude: number = 0;
   cityName: string = '';
 }
-import { DEFAULT_CITY, DEFAULT_LAT, DEFAULT_LON, PREF_KEY_CITY, PREF_KEY_LAT, PREF_KEY_LON } from '../common/Constants.ets';
-
-const DOMAIN: number = 0x0000;
-const TAG: string = 'MySholat|Location';
 
 export class LocationService {
   /**
@@ -37,12 +48,12 @@ export class LocationService {
         return LocationService.getCachedOrDefault();
       }
       const request: geoLocationManager.SingleLocationRequest = {
-        locatingTimeoutMs: 10000,     // milidetik (API baru; dulu `locatingTimeout` dalam detik)
-        // Enum LocationAccuracy tidak tersedia di beberapa versi SDK wearable,
-        // jadi gunakan angka literal (2 = accuracy tinggi / navigation-grade).
-        locationAccuracy: 2
+        locatingTimeoutMs: 10000      // milidetik (API baru; dulu `locatingTimeout` dalam detik)
+        // Catatan: field `locationAccuracy` TIDAK ada di SingleLocationRequest pada
+        // SDK ini — hanya ada di ContinuousLocationRequest, hence error kompilasi.
+        // One-shot fix tanpa akurasi eksplisit tetap memadai untuk zona waktu sholat.
       };
-      const location: geoLocationManager.LocationResult = await geoLocationManager.getCurrentLocation(request);
+      const location: PrayerPosition = await geoLocationManager.getCurrentLocation(request);
       hilog.info(DOMAIN, TAG, 'Got location: %{public}f, %{public}f', location.latitude, location.longitude);
 
       // Simpan sebagai cache untuk mode offline berikutnya.
