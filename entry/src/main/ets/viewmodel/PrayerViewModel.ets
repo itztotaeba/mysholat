@@ -72,7 +72,7 @@ export class PrayerViewModel {
     await ReminderService.ensureNotificationEnabled();
 
     // 2) DETEKSI LOKASI (+ reverse geocoding nama kota).
-    const geo: GeoInfo = await LocationService.getCurrentLocation();
+    const geo: GeoInfo = await LocationService.getGeoInfo();
     this.geo = geo;
     this.cityName = geo.cityName;
 

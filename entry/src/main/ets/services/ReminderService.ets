@@ -74,24 +74,28 @@ export class ReminderService {
   }
 
   /**
-   * Satu trigger ReminderAgentInfo dengan WANT_AGENT: ketika trigger fired,
-   * sistem mengirim WantAgent -> EntryAbility (onNewWant) menampilkan
-   * notification lokal "Waktu sholat X dalam 10 menit".
+   * Satu trigger ReminderRequestTimer. Ketika fired, sistem menampilkan
+   * notifikasi "Waktu sholat X dalam 10 menit" walau aplikasi tertutup
+   * (proses ReminderAgent berjalan di sistem -> hemat baterai).
    */
   private static async scheduleOne(item: PrayerScheduleItem, delaySec: number, idx: number): Promise<number> {
-    // ArkTS strict: object literal harus sesuai deklarasi class/interface eksplisit,
-    // jadi gunakan instance class konkret lalu isi field-nya satu per satu.
+    // ArkTS strict: object literal harus persis cocok dengan deklarasi
+    // ReminderRequestTimer pada SDK ini — tanpa field ekstra
+    // (`maxActionButtons` bukan bagian dari tipenya; jumlah tombol diambil
+    // dari panjang array actionButton).
     const info: reminderAgentManager.ReminderRequestTimer = {
       reminderType: reminderAgentManager.ReminderType.REMINDER_TYPE_TIMER,
       triggerTimeInSeconds: delaySec,
       actionButton: [new ReminderActionButton()],
-      // maxActionButtons TIDAK termasuk field ReminderRequestTimer pada SDK ini
-      // (jumlah tombol ditentukan dari panjang array actionButton) — hence error.
-      expiredContent: `Pengingat ${item.name} telah lewat`,
+      title: `Pengingat ${item.name}`,
+      content: `${item.name} tinggal 10 menit lagi (${item.time}). Mari siapkan diri untuk sholat.`,
+      expiredContent: `Waktu ${item.name} telah tiba`,
       snoozeContent: 'Tunda',
       notificationId: REMINDER_BASE_ID + idx,
       slotType: 3 // SlotType.SLOT_SERVICE_INFORMATION
     };
+    // publishReminder bisa melempar exception (mis. 802: kuota reminder habis,
+    // 905: device tidak mendukung tipe ini) — dibungkus try/catch oleh caller.
     return await reminderAgentManager.publishReminder(info);
   }
 
@@ -99,6 +103,8 @@ export class ReminderService {
   static async cancelAll(): Promise<void> {
     try {
       // getValidReminders mengembalikan ReminderRequest[] (bukan ReminderInfo[]).
+      // `slotType` bertipe union pada beberapa versi SDK — hindari membaca
+      // field selain notificationId agar kompatibel lintas API 11/12.
       const reminders: reminderAgentManager.ReminderRequest[] =
         await reminderAgentManager.getValidReminders();
       for (let i = 0; i < reminders.length; i++) {
