@@ -12,10 +12,12 @@
  *     `locatingTimeoutMs` (milidetik). `locationAccuracy` TIDAK ada di tipe ini.
  *  3. Tipe hasil                 : getCurrentLocation mengembalikan
  *     `geoLocationManager.Location`. `LocationResult` / `Position` TIDAK diekspor SDK.
- *  4. arkts-no-structural-typing : objek hasil SDK TIDAK BOLEH ditipkan ke class/
- *     interface lokal meskipun strukturnya sama. Karena itu hasil getLocation()
- *     dibaca INLINE (tanpa variabel bertipe custom) lalu dibungkus via constructor
+ *  4. arkts-no-structural-typing : objek hasil SDK TIDAK BOLEH di-assign ke class/
+ *     interface lokal meskipun strukturnya sama. Variabel penampung selalu diberi
+ *     tipe eksplisit dari namespace SDK (`geoLocationManager.Location` /
+ *     `geoLocationManager.GeoAddress[]`), baru nilainya dibungkus via constructor
  *     PrayerPosition/GeoInfo milik aplikasi sendiri.
+ *  5. getCurrentLocation dipanggil SATU KALI per fix (hemat baterai watch).
  */
 import { geoLocationManager } from '@kit.LocationKit';
 import { BusinessError } from '@kit.BasicServicesKit';
@@ -33,10 +35,10 @@ const TAG: string = 'MySholat|Location';
 export class LocationService {
   /**
    * Ambil satu fix lokasi saat ini (one-shot, radio GPS aktif sebentar saja).
-   * Hasil SDK (`geoLocationManager.Location`) dibaca INLINE dan langsung
-   * dibungkus lewat constructor PrayerPosition milik aplikasi sendiri —
-   * tidak pernah ditipkan ke variabel lokal bertipe lain, sehingga aman
-   * dari aturan arkts-no-structural-typing.
+   * Hasil SDK ditampung di variabel BERTIPE EKSPLISIT `geoLocationManager.Location`
+   * (tipe resmi API), lalu field latitude/longitude dibungkus lewat constructor
+   * PrayerPosition milik aplikasi — tidak pernah ada assignment objek SDK ke
+   * class/interface lokal mirip-struktur, sehingga aman dari arkts-no-structural-typing.
    */
   static async getCurrentLocation(): Promise<PrayerPosition> {
     try {
