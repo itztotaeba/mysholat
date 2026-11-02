@@ -28,12 +28,11 @@
         // Akses internet ke api.aladhan.com.
         "name": "ohos.permission.INTERNET"
       },
-      {
-        // Menampilkan notifikasi pengingat sholat.
-        "name": "ohos.permission.NOTIFICATION",
-        "reason": "$string:perm_notification_reason",
-        "usedScene": { "abilities": ["EntryAbility"], "when": "always" }
-      },
+      // CATATAN: Tidak perlu mendeklarasikan izin notifikasi di sini.
+      // ohos.permission.NOTIFICATION / OHOS_PERMISSION_NOTIFICATION tidak
+      // terdefinisi dalam SDK, sehingga menolak validasi hvigor PreBuild.
+      // Notifikasi aktif via requestEnableNotification() (dialog user-grant)
+      // di ReminderService + izin PUBLISH_AGENT_REMINDER di bawah ini.
       {
         // reminderAgentManager: menjadwalkan pengingat H-10 menit oleh sistem
         // (tidak butuh proses aplikasi tetap hidup -> hemat baterai).
