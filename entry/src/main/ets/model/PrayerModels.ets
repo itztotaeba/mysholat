@@ -69,8 +69,14 @@ export class PrayerScheduleItem {
 }
 
 /** Hasil reverse geocoding sederhana (nama kota/regency). */
-export interface GeoInfo {
+export class GeoInfo {
   latitude: number;
   longitude: number;
   cityName: string;
+
+  constructor(latitude: number, longitude: number, cityName: string) {
+    this.latitude = latitude;
+    this.longitude = longitude;
+    this.cityName = cityName;
+  }
 }

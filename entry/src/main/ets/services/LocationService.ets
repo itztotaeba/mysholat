@@ -2,7 +2,8 @@
  * LocationService.ets
  * -------------------
  * Deteksi lokasi menggunakan @ohos.geoLocationManager (HarmonyOS Location Kit):
- *  - ONE_SINGLE fix location (sekali ambil, hemat baterai — bukan continuous).
+ *  - getCurrentLocation ONE_SINGLE / ACCURACY_HIGH fix location (sekali ambil,
+ *    hemat baterai — bukan continuous).
  *  - Reverse geocoding -> nama kota (mis. "Jakarta Selatan").
  *  - Fallback: cache koordinat terakhir di Preferences, lalu default Jakarta.
  */
@@ -18,25 +19,17 @@ const DOMAIN: number = 0x0000;
 const TAG: string = 'MySholat|Location';
 
 /**
- * Bentuk minimal hasil getCurrentLocation. SDK API 12 TIDAK mengekspor tipe
- * `LocationResult` / `Position`, jadi kita deklarasikan interface sendiri yang
- * memuat field yang benar-benar dipakai (latitude & longitude).
+ * Catatan kompatibilitas SDK (API 12):
+ *  - Hasil getCurrentLocation bertipe `geoLocationManager.Location`, yang berisi
+ *    field `latitude` & `longitude` LANGSUNG (bukan dibungkus objek `location`).
+ *    Tipe `LocationResult` / `Position` memang TIDAK diekspor oleh SDK ini.
+ *  - `SingleLocationRequest` WAJIB mengisi `locatingPriority` dan memakai
+ *    `locatingTimeoutMs` (milidetik), bukan `locatingTimeout` (detik).
  */
-interface PrayerPosition {
-  latitude: number;
-  longitude: number;
-}
-
-/** Helper concrete-class agar tidak melanggar arkts-no-untyped-obj-literals. */
-class GeoInfoImpl {
-  latitude: number = 0;
-  longitude: number = 0;
-  cityName: string = '';
-}
 
 export class LocationService {
   /**
-   * Ambil lokasi saat ini. Menggunakan skema ONE_SINGLE sehingga radio GPS
+   * Ambil lokasi saat ini. Menggunakan skema one-shot sehingga radio GPS
    * hanya aktif sebentar (ramah baterai smartwatch).
    */
   static async getCurrentLocation(): Promise<GeoInfo> {
@@ -48,12 +41,10 @@ export class LocationService {
         return LocationService.getCachedOrDefault();
       }
       const request: geoLocationManager.SingleLocationRequest = {
-        locatingTimeoutMs: 10000      // milidetik (API baru; dulu `locatingTimeout` dalam detik)
-        // Catatan: field `locationAccuracy` TIDAK ada di SingleLocationRequest pada
-        // SDK ini — hanya ada di ContinuousLocationRequest, hence error kompilasi.
-        // One-shot fix tanpa akurasi eksplisit tetap memadai untuk zona waktu sholat.
+        locatingPriority: geoLocationManager.LocatingPriority.PRIORITY_LOCATING_SPEED,
+        locatingTimeoutMs: 10000
       };
-      const location: PrayerPosition = await geoLocationManager.getCurrentLocation(request);
+      const location: geoLocationManager.Location = await geoLocationManager.getCurrentLocation(request);
       hilog.info(DOMAIN, TAG, 'Got location: %{public}f, %{public}f', location.latitude, location.longitude);
 
       // Simpan sebagai cache untuk mode offline berikutnya.
@@ -61,11 +52,9 @@ export class LocationService {
       await preference.setNumber(PREF_KEY_LON, location.longitude);
 
       const cityName: string = await LocationService.reverseGeocode(location.latitude, location.longitude);
-      const info: GeoInfoImpl = new GeoInfoImpl();
-      info.latitude = location.latitude;
-      info.longitude = location.longitude;
-      info.cityName = cityName;
-      return info;
+      // GeoInfo adalah CLASS (bukan interface) — dibangun via constructor agar
+      // tidak melanggar aturan ArkTS strict-typing (arkts-no-structural-typing).
+      return new GeoInfo(location.latitude, location.longitude, cityName);
     } catch (err) {
       const e = err as BusinessError;
       // 3301100: lokasi timeout / 3301200: permission belum granted
@@ -108,10 +97,6 @@ export class LocationService {
     const lat: number = (await preference.getNumber(PREF_KEY_LAT, DEFAULT_LAT)) as number;
     const lon: number = (await preference.getNumber(PREF_KEY_LON, DEFAULT_LON)) as number;
     const city: string = (await preference.getString(PREF_KEY_CITY, DEFAULT_CITY)) as string;
-    const info: GeoInfoImpl = new GeoInfoImpl();
-    info.latitude = lat;
-    info.longitude = lon;
-    info.cityName = city;
-    return info;
+    return new GeoInfo(lat, lon, city);
   }
 }
