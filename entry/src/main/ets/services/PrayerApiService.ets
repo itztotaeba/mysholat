@@ -1,17 +1,25 @@
 /**
- * PrayerApiService.ets
- * --------------------
- * Mengakses API jadwal sholat Aladhan:
- *   https://api.aladhan.com/v1/timings?latitude={lat}&longitude={lon}&method=20
- * method=20 = Kemenag RI. Response di-parse ke PrayerScheduleItem[],
- * dengan cache lokal (Preferences) sebagai fallback bila jaringan gagal.
+ * PrayerApiService.ets — Data-fetching layer yang cepat & tangguh untuk wearable
+ * ---------------------------------------------------------------------------
+ * Strategi bertingkat (fast -> resilient):
+ *   1. CACHE HARIAN agresif (@ohos.data.preferences): bila lastFetchDate == hari
+ *      ini, jadwal dikembalikan SEKETIKA (0ms latency, 0 byte jaringan).
+ *   2. PRIMARY API  : MyQuran v2  (server Indonesia, payload kecil)
+ *        https://api.myquran.com/v2/sholat/jadwal/{id_kota}/{yyyy-mm-dd}
+ *   3. FALLBACK API : Aladhan v1/timings method=20 (Kemenag RI) via koordinat.
+ *   4. Timeout ketat connectTimeout/readTimeout = 5000ms — koneksi BT-relay
+ *      watch yang lambat TIDAK boleh membuat request menggantung.
+ *   5. Total failure -> kembalikan stale cache (watch tetap menampilkan
+ *      sesuatu) disertai error flag di PrayerFetchResult.
  */
 import { http } from '@kit.NetworkKit';
-import { BusinessError } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
-import { AladhanResponse, PrayerScheduleItem } from '../model/PrayerModels.ets';
 import {
-  ALADHAN_TIMINGS_URL, PREF_KEY_DATE, PREF_KEY_SCHEDULE, PrayerNames
+  AladhanResponse, MyQuranResponse, NormalizedDailySchedule, PrayerFetchResult
+} from '../model/PrayerModels.ets';
+import {
+  MYQURAN_JADWAL_URL, ALADHAN_TIMINGS_URL,
+  HTTP_CONNECT_TIMEOUT_MS, HTTP_READ_TIMEOUT_MS
 } from '../common/Constants.ets';
 import { preference } from './PreferenceService.ets';
 
@@ -19,84 +27,159 @@ const DOMAIN: number = 0x0000;
 const TAG: string = 'MySholat|API';
 
 export class PrayerApiService {
+  /* ======================================================================
+   * ORKESTRATOR UTAMA — panggil ini dari ViewModel.
+   * ====================================================================== */
+
   /**
-   * Ambil jadwal 5 waktu sholat hari ini untuk koordinat tertentu.
-   * @throws Error bila request gagal DAN tidak ada cache -> UI menampilkan
-   *         pesan "Gagal memuat jadwal".
+   * a. Cache-first: lastFetchDate == dateStr -> return instan tanpa jaringan.
+   * b. cityId tersedia -> coba MyQuran (cepat, ringan).
+   * c. MyQuran gagal / cityId kosong -> fallback Aladhan via lat/lon.
+   * d. Sukses -> simpan cachedSchedule + lastFetchDate ke Preferences.
+   * e. Semua gagal -> stale cache (bila ada) + isError=true.
    */
-  static async fetchTodayTimings(lat: number, lon: number): Promise<PrayerScheduleItem[]> {
+  static async getTodaysPrayerTimes(cityId?: string, lat?: number, lon?: number): Promise<PrayerFetchResult> {
+    const today: string = PrayerApiService.todayKey();
+
+    // ── (a) AGGRESSIVE DAILY CACHE ────────────────────────────────────────
+    const lastFetchDate: string = await preference.loadLastFetchDate();
+    const cachedRaw: string = await preference.loadCachedSchedule();
+    if (lastFetchDate === today && cachedRaw.length > 0) {
+      try {
+        const cached: NormalizedDailySchedule = JSON.parse(cachedRaw) as NormalizedDailySchedule;
+        hilog.info(DOMAIN, TAG, 'Cache hit (%{public}s) — 0ms network.', today);
+        return new PrayerFetchResult(cached, false, '');
+      } catch (parseErr) {
+        // Cache korup — abaikan, lanjut fetch jaringan.
+        hilog.warn(DOMAIN, TAG, 'Corrupt cache, refetching.');
+      }
+    }
+
+    // ── (b) PRIMARY: MyQuran ──────────────────────────────────────────────
+    let primaryErr: string = '';
+    if (cityId !== undefined && cityId.length > 0) {
+      try {
+        const sched: NormalizedDailySchedule = await PrayerApiService.getPrayerTimes(cityId, today);
+        await PrayerApiService.persist(sched, today);
+        return new PrayerFetchResult(sched, false, '');
+      } catch (e1) {
+        const err1 = e1 as Error;
+        primaryErr = err1.message;
+        hilog.warn(DOMAIN, TAG, 'MyQuran failed (%{public}s), falling back to Aladhan.', primaryErr);
+      }
+    } else {
+      primaryErr = 'cityId tidak diset';
+    }
+
+    // ── (c) FALLBACK: Aladhan ─────────────────────────────────────────────
+    if (lat !== undefined && lon !== undefined) {
+      try {
+        const sched2: NormalizedDailySchedule =
+          await PrayerApiService.getPrayerTimesByCoords(lat, lon, today);
+        await PrayerApiService.persist(sched2, today);
+        return new PrayerFetchResult(sched2, false, '');
+      } catch (e2) {
+        const err2 = e2 as Error;
+        hilog.error(DOMAIN, TAG, 'Aladhan fallback failed: %{public}s', err2.message);
+      }
+    }
+
+    // ── (e) TOTAL FAILURE: sajikan stale cache agar watch tetap berguna ──
+    if (cachedRaw.length > 0) {
+      try {
+        const stale: NormalizedDailySchedule = JSON.parse(cachedRaw) as NormalizedDailySchedule;
+        return new PrayerFetchResult(stale, true,
+          'Gagal memuat jadwal — menampilkan data tersimpan sebelumnya.');
+      } catch (staleErr) {
+        // Stale cache pun tak terbaca — jatuh ke hasil null di bawah.
+      }
+    }
+    return new PrayerFetchResult(null, true, 'Gagal memuat jadwal');
+  }
+
+  /* ======================================================================
+   * FETCHER PRIMER — MyQuran API (payload ~0.5KB, sangat ringan utk watch)
+   * ====================================================================== */
+  static async getPrayerTimes(cityId: string, dateStr: string): Promise<NormalizedDailySchedule> {
+    const url: string = MYQURAN_JADWAL_URL
+      .replace('{cityId}', encodeURIComponent(cityId))
+      .replace('{date}', dateStr);
+
+    const raw: string = await PrayerApiService.httpGet(url);
+    // Deserialisasi resmi ArkTS: JSON.parse(...) as <interface model>.
+    const body: MyQuranResponse = JSON.parse(raw) as MyQuranResponse;
+
+    // Validasi struktural eksplisit — API bisa balas 200 dengan status=false.
+    if (!body || !body.status || !body.data || !body.data.jadwal) {
+      throw new Error('Invalid MyQuran payload');
+    }
+    const j = body.data.jadwal;
+    if (j.subuh.length < 5 || j.dzuhur.length < 5 || j.ashar.length < 5 ||
+      j.maghrib.length < 5 || j.isya.length < 5) {
+      throw new Error('Incomplete MyQuran schedule');
+    }
+    // Waktu MyQuran sudah "HH:mm" murni — tinggal dinormalisasi.
+    return new NormalizedDailySchedule(dateStr, j.subuh, j.dzuhur, j.ashar,
+      j.maghrib, j.isya, 'myquran');
+  }
+
+  /* ======================================================================
+   * FETCHER FALLBACK — Aladhan API (method=20 Kemenag RI)
+   * ====================================================================== */
+  static async getPrayerTimesByCoords(lat: number, lon: number, dateStr: string): Promise<NormalizedDailySchedule> {
     const url: string = ALADHAN_TIMINGS_URL
       .replace('{lat}', lat.toFixed(4))
       .replace('{lon}', lon.toFixed(4));
 
+    const raw: string = await PrayerApiService.httpGet(url);
+    const body: AladhanResponse = JSON.parse(raw) as AladhanResponse;
+    if (!body || !body.data || !body.data.timings) {
+      throw new Error('Invalid Aladhan payload');
+    }
+
+    const t = body.data.timings;
+    // Format Aladhan: "04:35 (+07)" -> potong suffix zona waktu.
+    return new NormalizedDailySchedule(dateStr,
+      PrayerApiService.cleanTime(t.Fajr),
+      PrayerApiService.cleanTime(t.Dhuhr),
+      PrayerApiService.cleanTime(t.Asr),
+      PrayerApiService.cleanTime(t.Maghrib),
+      PrayerApiService.cleanTime(t.Isha),
+      'aladhan');
+  }
+
+  /* ======================================================================
+   * INTERNAL HELPERS
+   * ====================================================================== */
+
+  /**
+   * GET dengan TIMEOUT KETAT (5s/5s). Di wearable, radio sering tertidur atau
+   * koneksi relay HP lambat; tanpa batas ini promise bisa menggantung dan
+   * menahan CPU/wakelock => baterai terkuras. httpRequest.destroy() wajib
+   * dipanggil untuk mencegah kebocoran socket.
+   */
+  private static async httpGet(url: string): Promise<string> {
     const httpRequest = http.createHttp();
     try {
       const response = await httpRequest.request(url, {
         method: http.RequestMethod.GET,
         expectDataType: http.HttpDataType.STRING,
-        readTimeout: 10000,
-        connectTimeout: 10000
+        connectTimeout: HTTP_CONNECT_TIMEOUT_MS, // 5000ms
+        readTimeout: HTTP_READ_TIMEOUT_MS        // 5000ms
       });
-
       if (response.responseCode !== 200) {
         throw new Error(`HTTP ${response.responseCode}`);
       }
-
-      // Parsing JSON eksplisit — hindari `any`, cast ke interface model.
-      // Catatan arkts-no-structural-typing: hasil JSON.parse (Record<string,
-      // Object>) di-cast langsung ke interface model aplikasi yang memang
-      // mendeklarasikan field respons Aladhan — ini pola resmi ArkTS untuk
-      // deserialisasi, BUKAN assignment antar-dua deklarasi berbeda.
-      const raw: string = typeof response.result === 'string'
-        ? response.result as string : String(response.result);
-      const body: AladhanResponse = JSON.parse(raw) as AladhanResponse;
-      if (!body || !body.data || !body.data.timings) {
-        throw new Error('Invalid Aladhan payload');
-      }
-
-      const items: PrayerScheduleItem[] = PrayerApiService.buildSchedule(body);
-      // Simpan cache + tanggalnya untuk fallback offline & deteksi ganti hari.
-      const todayKey: string = PrayerApiService.todayKey();
-      await preference.setString(PREF_KEY_DATE, todayKey);
-      await preference.setString(PREF_KEY_SCHEDULE, JSON.stringify(items));
-      return items;
-    } catch (err) {
-      const e = err as BusinessError;
-      hilog.error(DOMAIN, TAG, 'fetchTimings failed: %{public}s', e.message ?? String(err));
-
-      // FALLBACK: pakai cache jika tanggal cache masih hari ini.
-      const cachedDate: string = (await preference.getString(PREF_KEY_DATE, '')) as string;
-      const cachedRaw: string = (await preference.getString(PREF_KEY_SCHEDULE, '')) as string;
-      if (cachedDate === PrayerApiService.todayKey() && cachedRaw.length > 0) {
-        hilog.warn(DOMAIN, TAG, 'Serving cached schedule for today.');
-        return JSON.parse(cachedRaw) as PrayerScheduleItem[];
-      }
-      // Tidak ada cache valid -> lempar error agar UI tampilkan pesan gagal.
-      throw new Error('Gagal memuat jadwal');
+      return typeof response.result === 'string' ? response.result as string : String(response.result);
     } finally {
-      httpRequest.destroy(); // wajib: hindari kebocoran koneksi HTTP di watch
+      httpRequest.destroy();
     }
   }
 
-  /** Konversi response Aladhan -> daftar PrayerScheduleItem hari ini. */
-  private static buildSchedule(body: AladhanResponse): PrayerScheduleItem[] {
-    const t = body.data.timings;
-    const pairs: string[][] = [
-      [PrayerNames.SUBUH, 'Fajr', t.Fajr],
-      [PrayerNames.DZUHUR, 'Dhuhr', t.Dhuhr],
-      [PrayerNames.ASHAR, 'Asr', t.Asr],
-      [PrayerNames.MAGHRIB, 'Maghrib', t.Maghrib],
-      [PrayerNames.ISYA, 'Isha', t.Isha]
-    ];
-
-    const result: PrayerScheduleItem[] = [];
-    for (let i = 0; i < pairs.length; i++) {
-      const rawTime: string = pairs[i][2];               // contoh: "04:35 (+07)"
-      const hhmm: string = PrayerApiService.cleanTime(rawTime); // "04:35"
-      const ms: number = PrayerApiService.toTodayMs(hhmm);
-      result.push(new PrayerScheduleItem(pairs[i][0], pairs[i][1], hhmm, ms));
-    }
-    return result;
+  /** (d) Persist hasil sukses -> cachedSchedule + lastFetchDate. */
+  private static async persist(sched: NormalizedDailySchedule, dateStr: string): Promise<void> {
+    await preference.saveCachedSchedule(JSON.stringify(sched));
+    await preference.saveLastFetchDate(dateStr);
   }
 
   /** Buang suffix zona waktu " (+07)" dari string waktu Aladhan. */
@@ -105,15 +188,7 @@ export class PrayerApiService {
     return idx > 0 ? raw.substring(0, idx) : raw;
   }
 
-  /** HH:mm -> timestamp ms pada tanggal hari ini (waktu lokal device). */
-  private static toTodayMs(hhmm: string): number {
-    const parts: string[] = hhmm.split(':');
-    const d: Date = new Date();
-    d.setHours(parseInt(parts[0], 10), parseInt(parts[1], 10), 0, 0);
-    return d.getTime();
-  }
-
-  /** Kunci tanggal lokal "YYYY-MM-DD" untuk cek kesegaran cache. */
+  /** Kunci tanggal lokal "YYYY-MM-DD" untuk cek kesegaran cache harian. */
   static todayKey(): string {
     const d: Date = new Date();
     const m: string = (d.getMonth() + 1).toString().padStart(2, '0');

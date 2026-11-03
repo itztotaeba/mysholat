@@ -6,9 +6,26 @@
  * dan konstanta reminderAgentManager.
  */
 
-/** Endpoint API jadwal sholat Aladhan. method=20 -> Kementerian Agama RI. */
+/**
+ * PRIMARY API — MyQuran (server Indonesia, payload kecil & responsif untuk watch).
+ * Format: https://api.myquran.com/v2/sholat/jadwal/{id_kota}/{yyyy-mm-dd}
+ */
+export const MYQURAN_JADWAL_URL: string =
+  'https://api.myquran.com/v2/sholat/jadwal/{cityId}/{date}';
+
+/** City ID default MyQuran untuk Jakarta (dipakai bila cityId belum diset user). */
+export const DEFAULT_CITY_ID: string = 'jakarta';
+
+/** FALLBACK API — Aladhan. method=20 -> Kementerian Agama RI. */
 export const ALADHAN_TIMINGS_URL: string =
   'https://api.aladhan.com/v1/timings?latitude={lat}&longitude={lon}&method=20';
+
+/**
+ * Timeout jaringan ketat (ms) untuk koneksi Bluetooth-relay smartwatch yang
+ * lambat — mencegah request menggantung & baterai terkuras.
+ */
+export const HTTP_CONNECT_TIMEOUT_MS: number = 5000;
+export const HTTP_READ_TIMEOUT_MS: number = 5000;
 
 /** Interval refresh lokasi/jadwal saat aplikasi berada di foreground (30 menit).
  *  Nilai besar sengaja dipilih agar hemat baterai smartwatch. */
@@ -25,8 +42,10 @@ export const PREF_STORE_NAME: string = 'mysholat_prefs';
 export const PREF_KEY_LAT: string = 'last_lat';
 export const PREF_KEY_LON: string = 'last_lon';
 export const PREF_KEY_CITY: string = 'last_city';
-export const PREF_KEY_DATE: string = 'last_date';
-export const PREF_KEY_SCHEDULE: string = 'last_schedule';
+export const PREF_KEY_DATE: string = 'last_date';           // alias lastFetchDate
+export const PREF_KEY_SCHEDULE: string = 'last_schedule';   // cachedSchedule (JSON string)
+/** City ID MyQuran pilihan user (mis. 'bandung'); default DEFAULT_CITY_ID bila kosong. */
+export const PREF_KEY_CITY_ID: string = 'selected_city_id';
 
 /** Nama kota default bila reverse geocoding gagal / offline. */
 export const DEFAULT_CITY: string = 'Jakarta Selatan';

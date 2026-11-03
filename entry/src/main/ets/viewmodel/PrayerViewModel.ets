@@ -14,7 +14,7 @@ import { LocationService } from '../services/LocationService.ets';
 import { PrayerApiService } from '../services/PrayerApiService.ets';
 import { ReminderService } from '../services/ReminderService.ets';
 import { preference } from '../services/PreferenceService.ets';
-import { GeoInfo, PrayerScheduleItem } from '../model/PrayerModels.ets';
+import { GeoInfo, PrayerFetchResult, PrayerScheduleItem } from '../model/PrayerModels.ets';
 import { CountdownTimer, formatCountdown } from './CountdownTimer.ets';
 import { DEFAULT_CITY, PREF_KEY_DATE, PREF_KEY_SCHEDULE, REFRESH_INTERVAL_MS } from '../common/Constants.ets';
 
@@ -87,19 +87,35 @@ export class PrayerViewModel {
   private async fetchScheduleAndRemind(): Promise<void> {
     const geo: GeoInfo | null = this.geo;
     if (geo === null) { return; }
-    try {
-      const items: PrayerScheduleItem[] =
-        await PrayerApiService.fetchTodayTimings(geo.latitude, geo.longitude);
-      this.schedule = items;
-      this.loadState = LoadState.READY;
-      this.recomputeNextPrayer();
-      await ReminderService.scheduleForToday(items);
-    } catch (err) {
-      const e = err as Error;
-      hilog.error(DOMAIN, TAG, 'fetchSchedule failed: %{public}s', e.message);
+
+    // Orkestrator cache-first: MyQuran (cityId) -> Aladhan (lat/lon) -> stale cache.
+    const cityId: string = await preference.loadSelectedCityId();
+    const result: PrayerFetchResult =
+      await PrayerApiService.getTodaysPrayerTimes(cityId, geo.latitude, geo.longitude);
+
+    if (result.schedule === null) {
+      // Tidak ada data sama sekali (jaringan gagal & cache kosong).
+      hilog.error(DOMAIN, TAG, 'All sources failed: %{public}s', result.errorMessage);
       this.loadState = LoadState.ERROR_API;
       this.errorMessage = 'Gagal memuat jadwal. Periksa koneksi Bluetooth/Wi-Fi lalu coba lagi.';
-      await this.loadFromCacheOrEmpty();
+      return;
+    }
+
+    // Selalu tampilkan data — fresh maupun stale — agar watch tetap berguna.
+    this.schedule = result.schedule.toItems();
+    if (result.isError) {
+      // Data basi tersaji + banner peringatan (state ERROR_API memicu tombol retry).
+      this.loadState = LoadState.ERROR_API;
+      this.errorMessage = result.errorMessage;
+    } else {
+      this.loadState = LoadState.READY;
+      this.errorMessage = '';
+    }
+
+    this.recomputeNextPrayer();
+    if (!result.isError) {
+      // Hanya jadwalkan reminder bila data hari ini terjamin segar.
+      await ReminderService.scheduleForToday(this.schedule);
     }
   }
 

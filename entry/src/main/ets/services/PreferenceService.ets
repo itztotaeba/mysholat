@@ -9,7 +9,7 @@ import { preferences } from '@kit.ArkData';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { common } from '@kit.AbilityKit';
-import { PREF_STORE_NAME } from '../common/Constants.ets';
+import { PREF_STORE_NAME, PREF_KEY_SCHEDULE, PREF_KEY_DATE, PREF_KEY_CITY_ID, DEFAULT_CITY_ID } from '../common/Constants.ets';
 
 const DOMAIN: number = 0x0000;
 const TAG: string = 'MySholat|Prefs';
@@ -63,6 +63,42 @@ class PreferenceWrapper {
     } catch (err) {
       return def;
     }
+  }
+
+  /* ======================================================================
+   * API TERSIRAT untuk strategi cache jadwal sholat (PrayerApiService).
+   * Key terpusat di Constants.ets agar tidak ada string literal berserakan.
+   * ====================================================================== */
+
+  /** Simpan `cachedSchedule` — NormalizedDailySchedule yang di-JSON.stringify. */
+  async saveCachedSchedule(jsonStr: string): Promise<void> {
+    await this.setString(PREF_KEY_SCHEDULE, jsonStr);
+  }
+
+  /** Muat `cachedSchedule` mentah ('' bila belum pernah disimpan). */
+  async loadCachedSchedule(): Promise<string> {
+    return await this.getString(PREF_KEY_SCHEDULE, '');
+  }
+
+  /** Simpan tanggal fetch terakhir "YYYY-MM-DD" (penanda kesegaran cache harian). */
+  async saveLastFetchDate(dateStr: string): Promise<void> {
+    await this.setString(PREF_KEY_DATE, dateStr);
+  }
+
+  /** Baca tanggal fetch terakhir ('' bila kosong). */
+  async loadLastFetchDate(): Promise<string> {
+    return await this.getString(PREF_KEY_DATE, '');
+  }
+
+  /** Simpan city ID MyQuran pilihan user (mis. 'bandung'). */
+  async saveSelectedCityId(cityId: string): Promise<void> {
+    await this.setString(PREF_KEY_CITY_ID, cityId);
+  }
+
+  /** Baca city ID MyQuran; DEFAULT_CITY_ID (Jakarta) bila belum diset. */
+  async loadSelectedCityId(): Promise<string> {
+    const v: string = await this.getString(PREF_KEY_CITY_ID, '');
+    return v.length > 0 ? v : DEFAULT_CITY_ID;
   }
 }
 
