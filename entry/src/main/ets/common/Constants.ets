@@ -16,6 +16,16 @@ export const MYQURAN_JADWAL_URL: string =
 /** City ID default MyQuran untuk Jakarta (dipakai bila cityId belum diset user). */
 export const DEFAULT_CITY_ID: string = 'jakarta';
 
+/**
+ * PERINGATAN VALIDASI API (diuji langsung, Nov 2026):
+ * MyQuran v2 membalas HTTP 200 dengan {"status":false,"message":"Data not
+ * found"} untuk tanggal yang tidak ada di basis datanya — termasuk tanggal
+ * HARI INI pada beberapa periode. Bila dibiarkan, setiap buka aplikasi =
+ * rangkaian request jaringan gagal (MyQuran -> Aladhan) lewat relay Bluetooth
+ * Huawei Watch yang lambat, dan user melihat layar "Memuat jadwal sholat…"
+ * sangat lama. Solusi: negative caching di PrayerApiService (lihat persist()).
+ */
+
 /** FALLBACK API — Aladhan. method=20 -> Kementerian Agama RI. */
 export const ALADHAN_TIMINGS_URL: string =
   'https://api.aladhan.com/v1/timings?latitude={lat}&longitude={lon}&method=20';
@@ -23,9 +33,18 @@ export const ALADHAN_TIMINGS_URL: string =
 /**
  * Timeout jaringan ketat (ms) untuk koneksi Bluetooth-relay smartwatch yang
  * lambat — mencegah request menggantung & baterai terkuras.
+ * Catatan wearable: handshake TCP+TLS via relay HP bisa >5s; nilai dinaikkan
+ * ke 8s agar request legit tidak dianggap gagal, tetap ber-batas (anti-hang).
  */
-export const HTTP_CONNECT_TIMEOUT_MS: number = 5000;
-export const HTTP_READ_TIMEOUT_MS: number = 5000;
+export const HTTP_CONNECT_TIMEOUT_MS: number = 8000;
+export const HTTP_READ_TIMEOUT_MS: number = 8000;
+
+/**
+ * DEADLINE keseluruhan bootstrap() (ms). Jaminan keras: UI TIDAK boleh
+ * terjebak di layar loading lebih dari ini — saat deadline tembus, ViewModel
+ * menyajikan stale cache / jadwal default Kemenag Jakarta + banner error.
+ */
+export const BOOTSTRAP_DEADLINE_MS: number = 15000;
 
 /** Interval refresh lokasi/jadwal saat aplikasi berada di foreground (30 menit).
  *  Nilai besar sengaja dipilih agar hemat baterai smartwatch. */

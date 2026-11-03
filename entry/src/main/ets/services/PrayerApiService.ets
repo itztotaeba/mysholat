@@ -48,6 +48,13 @@ export class PrayerApiService {
       try {
         const cached: NormalizedDailySchedule = JSON.parse(cachedRaw) as NormalizedDailySchedule;
         hilog.info(DOMAIN, TAG, 'Cache hit (%{public}s) — 0ms network.', today);
+        // NEGATIVE CACHE: hari ini kedua API pernah gagal -> jangan ulangi
+        // rantai request lambat. Sajikan jadwal default tersimpan seketika
+        // dengan isError=true (UI menampilkan banner + tombol "Coba Lagi").
+        if (cached.isDefault === true) {
+          return new PrayerFetchResult(cached, true,
+            'Gagal memuat jadwal dari internet — menampilkan jadwal standar Jakarta.');
+        }
         return new PrayerFetchResult(cached, false, '');
       } catch (parseErr) {
         // Cache korup — abaikan, lanjut fetch jaringan.
@@ -84,17 +91,31 @@ export class PrayerApiService {
       }
     }
 
-    // ── (e) TOTAL FAILURE: sajikan stale cache agar watch tetap berguna ──
+    // ── (e) TOTAL FAILURE ───────────────────────────────────────────────
     if (cachedRaw.length > 0) {
       try {
         const stale: NormalizedDailySchedule = JSON.parse(cachedRaw) as NormalizedDailySchedule;
-        return new PrayerFetchResult(stale, true,
-          'Gagal memuat jadwal — menampilkan data tersimpan sebelumnya.');
+        if (stale.isDefault !== true) {
+          // Cache data nyata dari hari sebelumnya -> tampilkan, TANPA disimpan
+          // ulang sebagai "cache hari ini" (besok tetap mencoba fetch segar).
+          return new PrayerFetchResult(stale, true,
+            'Gagal memuat jadwal — menampilkan data tersimpan sebelumnya.');
+        }
       } catch (staleErr) {
-        // Stale cache pun tak terbaca — jatuh ke hasil null di bawah.
+        // Stale cache pun tak terbaca — lanjut ke negative cache di bawah.
       }
     }
-    return new PrayerFetchResult(null, true, 'Gagal memuat jadwal');
+
+    // NEGATIVE CACHING (anti "loading terus"): kedua API gagal HARI INI.
+    // Simpan jadwal default Jakarta dengan isDefault=true + lastFetchDate=today
+    // sehingga rantai jaringan lambat hanya terjadi SEKALI per hari. Buka
+    // aplikasi berikutnya langsung cache-hit (0ms) dengan banner peringatan,
+    // bukan layar loading panjang lewat relay Bluetooth watch.
+    const fallbackSched: NormalizedDailySchedule = PrayerApiService.buildDefaultSchedule();
+    await preference.saveCachedSchedule(JSON.stringify(fallbackSched));
+    await preference.saveLastFetchDate(today);
+    return new PrayerFetchResult(fallbackSched, true,
+      'Gagal memuat jadwal dari internet — menampilkan jadwal standar Jakarta.');
   }
 
   /* ======================================================================
@@ -110,6 +131,12 @@ export class PrayerApiService {
     const body: MyQuranResponse = JSON.parse(raw) as MyQuranResponse;
 
     // Validasi struktural eksplisit — API bisa balas 200 dengan status=false.
+    // Catatan wearable (diuji langsung): MyQuran mengembalikan HTTP 200 +
+    // {"status":false,"message":"Data not found"} untuk tanggal yang tidak ada
+    // di basis datanya (termasuk sebagian tanggal "hari ini"). Dulu ini memicu
+    // rantai fallback Aladhan yang lambat -> aplikasi tampak loading terus.
+    // Kini tetap dilempar sebagai error (orkestrator mencoba Aladhan sekali),
+    // dan hasil akhirnya di-negative-cache oleh getTodaysPrayerTimes().
     if (!body || !body.status || !body.data || !body.data.jadwal) {
       throw new Error('Invalid MyQuran payload');
     }
@@ -149,13 +176,27 @@ export class PrayerApiService {
   }
 
   /* ======================================================================
+   * SAFETY NET — jadwal default Kemenag Jakarta. Dipanggil ViewModel/orkestrator
+   * bila seluruh sumber (cache + MyQuran + Aladhan) gagal, sehingga watch tidak
+   * pernah terjebak di layar loading. Disimpan ke cache dengan isDefault=true
+   * (negative caching): hari ini buka aplikasi langsung tersaji seketika,
+   * besok orkestrator otomatis mencoba fetch segar lagi (tanggal cache basi).
+   * ====================================================================== */
+  static buildDefaultSchedule(): NormalizedDailySchedule {
+    return new NormalizedDailySchedule(PrayerApiService.todayKey(),
+      FALLBACK_SUBUH, FALLBACK_DZUHUR, FALLBACK_ASHAR, FALLBACK_MAGHRIB, FALLBACK_ISYA,
+      'default-jakarta', true);
+  }
+
+  /* ======================================================================
    * INTERNAL HELPERS
    * ====================================================================== */
 
   /**
-   * GET dengan TIMEOUT KETAT (5s/5s). Di wearable, radio sering tertidur atau
-   * koneksi relay HP lambat; tanpa batas ini promise bisa menggantung dan
-   * menahan CPU/wakelock => baterai terkuras. httpRequest.destroy() wajib
+   * GET dengan TIMEOUT KETAT (connect/read = HTTP_*_TIMEOUT_MS, lihat
+   * Constants.ets). Di wearable, radio sering tertidur atau koneksi relay HP
+   * lambat; tanpa batas ini promise bisa menggantung dan menahan CPU/wakelock
+   * => baterai terkuras & UI mentok loading. httpRequest.destroy() wajib
    * dipanggil untuk mencegah kebocoran socket.
    */
   private static async httpGet(url: string): Promise<string> {
@@ -164,8 +205,8 @@ export class PrayerApiService {
       const response = await httpRequest.request(url, {
         method: http.RequestMethod.GET,
         expectDataType: http.HttpDataType.STRING,
-        connectTimeout: HTTP_CONNECT_TIMEOUT_MS, // 5000ms
-        readTimeout: HTTP_READ_TIMEOUT_MS        // 5000ms
+        connectTimeout: HTTP_CONNECT_TIMEOUT_MS,
+        readTimeout: HTTP_READ_TIMEOUT_MS
       });
       if (response.responseCode !== 200) {
         throw new Error(`HTTP ${response.responseCode}`);
