@@ -1,26 +1,32 @@
 /**
- * PrayerApiService.ets — Data-fetching layer yang cepat & tangguh untuk wearable
- * ---------------------------------------------------------------------------
- * Strategi bertingkat (fast -> resilient):
- *   1. CACHE HARIAN agresif (@ohos.data.preferences): bila lastFetchDate == hari
- *      ini, jadwal dikembalikan SEKETIKA (0ms latency, 0 byte jaringan).
- *   2. PRIMARY API  : MyQuran v2  (server Indonesia, payload kecil)
- *        https://api.myquran.com/v2/sholat/jadwal/{id_kota}/{yyyy-mm-dd}
- *   3. FALLBACK API : Aladhan v1/timings method=20 (Kemenag RI) via koordinat.
- *   4. Timeout ketat connectTimeout/readTimeout = 5000ms — koneksi BT-relay
- *      watch yang lambat TIDAK boleh membuat request menggantung.
- *   5. Total failure -> kembalikan stale cache (watch tetap menampilkan
- *      sesuatu) disertai error flag di PrayerFetchResult.
+ * PrayerApiService.ets — Data-fetching layer untuk wearable
+ * ---------------------------------------------------------
+ * LOGIKA PENGAMBILAN JADWAL KEMBALI KE DESAIN AWAL (permintaan user):
+ *   - SATU-SATUNYA sumber jaringan = Aladhan API (gratis & andal):
+ *       https://api.aladhan.com/v1/timings?latitude={lat}&longitude={lon}&method=20
+ *     (method=20 = jadwal Kemenag RI).
+ *   - MyQuran DIHAPUS dari jalur utama: dalam pengujian live API tersebut
+ *     sering membalas HTTP 200 + {"status":false,"message":"Data not found"}
+ *     untuk tanggal hari ini, sehingga setiap sesi membuka aplikasi selalu
+ *     berujung pada rantai fallback lambat + negative caching yang membuat
+ *     UI tampak "loading terus" dan tombol "Coba Lagi" terasa mati.
+ *   - CACHE HARIAN @ohos.data.preferences dipertahankan:
+ *       lastFetchDate == hari ini  -> return cache instan (0ms jaringan).
+ *       forceRefresh (tombol Refresh) -> SELALU lewati cache & ambil ulang
+ *       dari jaringan (penting saat user berpindah kota/tempat).
+ *   - Timeout jaringan tetap ketat (HTTP_*_TIMEOUT_MS di Constants) agar
+ *     request tidak menggantung pada koneksi relay watch yang buruk.
+ *   - Total failure -> stale cache (bila ada) + error flag; TIDAK ada
+ *     negative-caching jadwal default lagi supaya "Coba Lagi" benar-benar
+ *     mengulang pencarian dari awal.
  */
 import { http } from '@kit.NetworkKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import {
-  AladhanResponse, MyQuranResponse, NormalizedDailySchedule, PrayerFetchResult
+  AladhanResponse, NormalizedDailySchedule, PrayerFetchResult
 } from '../model/PrayerModels.ets';
 import {
-  MYQURAN_JADWAL_URL, ALADHAN_TIMINGS_URL,
-  HTTP_CONNECT_TIMEOUT_MS, HTTP_READ_TIMEOUT_MS,
-  FALLBACK_SUBUH, FALLBACK_DZUHUR, FALLBACK_ASHAR, FALLBACK_MAGHRIB, FALLBACK_ISYA
+  ALADHAN_TIMINGS_URL, HTTP_CONNECT_TIMEOUT_MS, HTTP_READ_TIMEOUT_MS
 } from '../common/Constants.ets';
 import { preference } from './PreferenceService.ets';
 
@@ -33,126 +39,68 @@ export class PrayerApiService {
    * ====================================================================== */
 
   /**
-   * a. Cache-first: lastFetchDate == dateStr -> return instan tanpa jaringan.
-   * b. cityId tersedia -> coba MyQuran (cepat, ringan).
-   * c. MyQuran gagal / cityId kosong -> fallback Aladhan via lat/lon.
-   * d. Sukses -> simpan cachedSchedule + lastFetchDate ke Preferences.
-   * e. Semua gagal -> stale cache (bila ada) + isError=true.
+   * a. forceRefresh=false & lastFetchDate == hari ini -> return cache instan.
+   * b. forceRefresh=true (tombol Refresh) atau cache basi -> fetch Aladhan
+   *    dengan koordinat TERBARU (user mungkin baru pindah tempat).
+   * c. Sukses -> simpan cachedSchedule + lastFetchDate ke Preferences.
+   * d. Gagal  -> stale cache (bila ada) + isError=true; cache TIDAK ditimpa
+   *    jadwal default, jadi retry berikutnya tetap sungguh-sungguh ke jaringan.
    */
-  static async getTodaysPrayerTimes(cityId?: string, lat?: number, lon?: number): Promise<PrayerFetchResult> {
+  static async getTodaysPrayerTimes(lat?: number, lon?: number,
+    forceRefresh: boolean = false): Promise<PrayerFetchResult> {
     const today: string = PrayerApiService.todayKey();
 
-    // ── (a) AGGRESSIVE DAILY CACHE ────────────────────────────────────────
-    const lastFetchDate: string = await preference.loadLastFetchDate();
-    const cachedRaw: string = await preference.loadCachedSchedule();
-    if (lastFetchDate === today && cachedRaw.length > 0) {
-      try {
-        const cached: NormalizedDailySchedule = JSON.parse(cachedRaw) as NormalizedDailySchedule;
-        hilog.info(DOMAIN, TAG, 'Cache hit (%{public}s) — 0ms network.', today);
-        // NEGATIVE CACHE: hari ini kedua API pernah gagal -> jangan ulangi
-        // rantai request lambat. Sajikan jadwal default tersimpan seketika
-        // dengan isError=true (UI menampilkan banner + tombol "Coba Lagi").
-        if (cached.isDefault === true) {
-          return new PrayerFetchResult(cached, true,
-            'Gagal memuat jadwal dari internet — menampilkan jadwal standar Jakarta.');
+    // ── (a) CACHE HARIAN ──────────────────────────────────────────────────
+    // Dilewati sepenuhnya saat forceRefresh — inilah bedanya dengan bug lama
+    // di mana "Coba Lagi" membentur negative cache dan tampak tidak mencari.
+    if (!forceRefresh) {
+      const lastFetchDate: string = await preference.loadLastFetchDate();
+      const cachedRaw: string = await preference.loadCachedSchedule();
+      if (lastFetchDate === today && cachedRaw.length > 0) {
+        try {
+          const cached: NormalizedDailySchedule = JSON.parse(cachedRaw) as NormalizedDailySchedule;
+          hilog.info(DOMAIN, TAG, 'Cache hit (%{public}s) — 0ms network.', today);
+          return new PrayerFetchResult(cached, false, '');
+        } catch (parseErr) {
+          // Cache korup — abaikan, lanjut fetch jaringan.
+          hilog.warn(DOMAIN, TAG, 'Corrupt cache, refetching.');
         }
-        return new PrayerFetchResult(cached, false, '');
-      } catch (parseErr) {
-        // Cache korup — abaikan, lanjut fetch jaringan.
-        hilog.warn(DOMAIN, TAG, 'Corrupt cache, refetching.');
       }
     }
 
-    // ── (b) PRIMARY: MyQuran ──────────────────────────────────────────────
-    let primaryErr: string = '';
-    if (cityId !== undefined && cityId.length > 0) {
-      try {
-        const sched: NormalizedDailySchedule = await PrayerApiService.getPrayerTimes(cityId, today);
-        await PrayerApiService.persist(sched, today);
-        return new PrayerFetchResult(sched, false, '');
-      } catch (e1) {
-        const err1 = e1 as Error;
-        primaryErr = err1.message;
-        hilog.warn(DOMAIN, TAG, 'MyQuran failed (%{public}s), falling back to Aladhan.', primaryErr);
-      }
-    } else {
-      primaryErr = 'cityId tidak diset';
-    }
-
-    // ── (c) FALLBACK: Aladhan ─────────────────────────────────────────────
+    // ── (b) FETCH ALADHAN (sumber tunggal, desain awal) ───────────────────
     if (lat !== undefined && lon !== undefined) {
       try {
-        const sched2: NormalizedDailySchedule =
+        const sched: NormalizedDailySchedule =
           await PrayerApiService.getPrayerTimesByCoords(lat, lon, today);
-        await PrayerApiService.persist(sched2, today);
-        return new PrayerFetchResult(sched2, false, '');
-      } catch (e2) {
-        const err2 = e2 as Error;
-        hilog.error(DOMAIN, TAG, 'Aladhan fallback failed: %{public}s', err2.message);
+        // (c) Persist hasil segar -> cachedSchedule + lastFetchDate.
+        await PrayerApiService.persist(sched, today);
+        return new PrayerFetchResult(sched, false, '');
+      } catch (e) {
+        const err = e as Error;
+        hilog.error(DOMAIN, TAG, 'Aladhan fetch failed: %{public}s', err.message);
       }
     }
 
-    // ── (e) TOTAL FAILURE ───────────────────────────────────────────────
-    if (cachedRaw.length > 0) {
+    // ── (d) TOTAL FAILURE ─────────────────────────────────────────────────
+    const cachedRaw2: string = await preference.loadCachedSchedule();
+    if (cachedRaw2.length > 0) {
       try {
-        const stale: NormalizedDailySchedule = JSON.parse(cachedRaw) as NormalizedDailySchedule;
-        if (stale.isDefault !== true) {
-          // Cache data nyata dari hari sebelumnya -> tampilkan, TANPA disimpan
-          // ulang sebagai "cache hari ini" (besok tetap mencoba fetch segar).
-          return new PrayerFetchResult(stale, true,
-            'Gagal memuat jadwal — menampilkan data tersimpan sebelumnya.');
-        }
+        const stale: NormalizedDailySchedule = JSON.parse(cachedRaw2) as NormalizedDailySchedule;
+        // Tampilkan data tersimpan terakhir TANPA menimpanya, agar "Coba
+        // Lagi"/buka berikutnya masih benar-benar menyentuh jaringan.
+        return new PrayerFetchResult(stale, true,
+          'Gagal memuat jadwal — menampilkan data tersimpan sebelumnya.');
       } catch (staleErr) {
-        // Stale cache pun tak terbaca — lanjut ke negative cache di bawah.
+        hilog.warn(DOMAIN, TAG, 'Stale cache unreadable.');
       }
     }
-
-    // NEGATIVE CACHING (anti "loading terus"): kedua API gagal HARI INI.
-    // Simpan jadwal default Jakarta dengan isDefault=true + lastFetchDate=today
-    // sehingga rantai jaringan lambat hanya terjadi SEKALI per hari. Buka
-    // aplikasi berikutnya langsung cache-hit (0ms) dengan banner peringatan,
-    // bukan layar loading panjang lewat relay Bluetooth watch.
-    const fallbackSched: NormalizedDailySchedule = PrayerApiService.buildDefaultSchedule();
-    await preference.saveCachedSchedule(JSON.stringify(fallbackSched));
-    await preference.saveLastFetchDate(today);
-    return new PrayerFetchResult(fallbackSched, true,
-      'Gagal memuat jadwal dari internet — menampilkan jadwal standar Jakarta.');
+    return new PrayerFetchResult(null, true,
+      'Gagal memuat jadwal. Periksa koneksi lalu tekan Refresh.');
   }
 
   /* ======================================================================
-   * FETCHER PRIMER — MyQuran API (payload ~0.5KB, sangat ringan utk watch)
-   * ====================================================================== */
-  static async getPrayerTimes(cityId: string, dateStr: string): Promise<NormalizedDailySchedule> {
-    const url: string = MYQURAN_JADWAL_URL
-      .replace('{cityId}', encodeURIComponent(cityId))
-      .replace('{date}', dateStr);
-
-    const raw: string = await PrayerApiService.httpGet(url);
-    // Deserialisasi resmi ArkTS: JSON.parse(...) as <interface model>.
-    const body: MyQuranResponse = JSON.parse(raw) as MyQuranResponse;
-
-    // Validasi struktural eksplisit — API bisa balas 200 dengan status=false.
-    // Catatan wearable (diuji langsung): MyQuran mengembalikan HTTP 200 +
-    // {"status":false,"message":"Data not found"} untuk tanggal yang tidak ada
-    // di basis datanya (termasuk sebagian tanggal "hari ini"). Dulu ini memicu
-    // rantai fallback Aladhan yang lambat -> aplikasi tampak loading terus.
-    // Kini tetap dilempar sebagai error (orkestrator mencoba Aladhan sekali),
-    // dan hasil akhirnya di-negative-cache oleh getTodaysPrayerTimes().
-    if (!body || !body.status || !body.data || !body.data.jadwal) {
-      throw new Error('Invalid MyQuran payload');
-    }
-    const j = body.data.jadwal;
-    if (j.subuh.length < 5 || j.dzuhur.length < 5 || j.ashar.length < 5 ||
-      j.maghrib.length < 5 || j.isya.length < 5) {
-      throw new Error('Incomplete MyQuran schedule');
-    }
-    // Waktu MyQuran sudah "HH:mm" murni — tinggal dinormalisasi.
-    return new NormalizedDailySchedule(dateStr, j.subuh, j.dzuhur, j.ashar,
-      j.maghrib, j.isya, 'myquran');
-  }
-
-  /* ======================================================================
-   * FETCHER FALLBACK — Aladhan API (method=20 Kemenag RI)
+   * FETCHER — Aladhan API (method=20 Kemenag RI)
    * ====================================================================== */
   static async getPrayerTimesByCoords(lat: number, lon: number, dateStr: string): Promise<NormalizedDailySchedule> {
     const url: string = ALADHAN_TIMINGS_URL
@@ -174,19 +122,6 @@ export class PrayerApiService {
       PrayerApiService.cleanTime(t.Maghrib),
       PrayerApiService.cleanTime(t.Isha),
       'aladhan');
-  }
-
-  /* ======================================================================
-   * SAFETY NET — jadwal default Kemenag Jakarta. Dipanggil ViewModel/orkestrator
-   * bila seluruh sumber (cache + MyQuran + Aladhan) gagal, sehingga watch tidak
-   * pernah terjebak di layar loading. Disimpan ke cache dengan isDefault=true
-   * (negative caching): hari ini buka aplikasi langsung tersaji seketika,
-   * besok orkestrator otomatis mencoba fetch segar lagi (tanggal cache basi).
-   * ====================================================================== */
-  static buildDefaultSchedule(): NormalizedDailySchedule {
-    return new NormalizedDailySchedule(PrayerApiService.todayKey(),
-      FALLBACK_SUBUH, FALLBACK_DZUHUR, FALLBACK_ASHAR, FALLBACK_MAGHRIB, FALLBACK_ISYA,
-      'default-jakarta', true);
   }
 
   /* ======================================================================

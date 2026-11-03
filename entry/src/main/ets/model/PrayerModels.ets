@@ -2,39 +2,8 @@
  * PrayerModels.ets
  * ----------------
  * Model data (strict typing, tanpa `any`) untuk response API Aladhan
- * dan struktur jadwal sholat yang dipakai UI.
+ * (desain awal — satu-satunya sumber jadwal) dan struktur UI.
  */
-
-/* ==========================================================================
- * RESPONSE MODEL — MyQuran v2 (PRIMARY API, payload ringan & server ID)
- * GET https://api.myquran.com/v2/sholat/jadwal/{id_kota}/{yyyy-mm-dd}
- * ========================================================================== */
-export interface MyQuranResponse {
-  status: boolean;
-  message: string;
-  data: MyQuranData;
-}
-
-export interface MyQuranData {
-  lokasi: string;
-  tanggal: string;    // "YYYY-MM-DD"
-  jadwal: MyQuranJadwal;
-}
-
-/**
- * Field jadwal MyQuran memakai penamaan lokal: subuh, dzuhur, ashar,
- * maghrib, isya (format "HH:mm" tanpa zona waktu — lebih ringan di-parse
- * daripada Aladhan yang bersuffix " (+07)").
- */
-export interface MyQuranJadwal {
-  imsak: string;
-  subuh: string;
-  dzuhur: string;
-  ashar: string;
-  maghrib: string;
-  isya: string;
-  terbit: string;
-}
 
 /* ==========================================================================
  * RESPONSE MODEL — Aladhan v1/timings (FALLBACK API, method=20 Kemenag RI)
@@ -104,7 +73,7 @@ export class PrayerScheduleItem {
 
 /**
  * Jadwal HARIAN yang sudah NORMALISASI — bentuk kanonik yang sama persis
- * baik bila sumbernya MyQuran maupun Aladhan. Inilah struktur yang disimpan
+ * dari Aladhan (sumber tunggal). Inilah struktur yang disimpan
  * ke Preferences sebagai `cachedSchedule` (stringified JSON), sehingga layer
  * cache tidak perlu tahu API mana yang menghasilkan data.
  *
@@ -120,7 +89,7 @@ export class NormalizedDailySchedule {
   ashar: string;      // "HH:mm"
   maghrib: string;    // "HH:mm"
   isya: string;       // "HH:mm"
-  /** Sumber data — informatif untuk log/debug ('myquran' | 'aladhan' | 'default-jakarta'). */
+  /** Sumber data — informatif untuk log/debug ('aladhan'). */
   source: string;
   /**
    * NEGATIVE CACHING FLAG. true bila kedua API gagal hari ini dan yang

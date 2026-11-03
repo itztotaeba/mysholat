@@ -50,18 +50,26 @@ struct Index {
 
   build() {
     Column() {
-      // ===== HEADER: lokasi user (hasil reverse geocoding) =====
-      Row() {
-        Text(this.vm.cityName)
-          .fontSize(13)
-          .fontColor(AppColors.TEXT_SECONDARY)
-          .maxLines(1)
-          .textOverflow({ overflow: TextOverflow.Ellipsis })
+      // ===== HEADER: jam saat ini + lokasi user (hasil reverse geocoding) =====
+      Column({ space: 1 }) {
+        Text(this.vm.currentClock)
+          .fontSize(16)
+          .fontWeight(FontWeight.Medium)
+          .fontColor(AppColors.TEXT_PRIMARY)
+          .fontFeature('"tnum" on') // digit tetap agar jam tidak bergeser
+        Row() {
+          Text(this.vm.cityName)
+            .fontSize(12)
+            .fontColor(AppColors.TEXT_SECONDARY)
+            .maxLines(1)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
+        }
+        .justifyContent(FlexAlign.Center)
       }
-      .justifyContent(FlexAlign.Center)
       .width('100%')
+      .margin({ bottom: 4 })
 
-      // ===== KARTU UTAMA: SHOLAT BERIKUTNYA (paling atas, warna mencolok) =====
+      // ===== KARTU KECIL: SHOLAT BERIKUTNYA (compact, satu baris) =====
       if (this.vm.loadState === LoadState.LOADING && this.vm.schedule.length === 0) {
         this.loadingView()
       } else {
@@ -86,6 +94,22 @@ struct Index {
       .layoutWeight(1)
       .width('92%')
       .padding({ top: 6 })
+
+      // ===== TOMBOL REFRESH — ambil ulang lokasi & jadwal (user pindah tempat) =====
+      Button(this.vm.isRefreshing ? 'Memuat ulang…' : 'Refresh')
+        .fontSize(12)
+        .height(30)
+        .width('60%')
+        .enabled(!this.vm.isRefreshing)
+        .backgroundColor(AppColors.CARD)
+        .fontColor(AppColors.ACCENT)
+        .borderRadius(15)
+        .border({ width: 1, color: AppColors.BORDER_DARK_BLUE })
+        .margin({ top: 6, bottom: 4 })
+        .onClick(() => {
+          const ctx: common.UIAbilityContext | undefined = abilityContextOf(this.getUIContext());
+          this.vm.refresh(ctx);
+        })
     }
     .width('100%')
     .height('100%')
@@ -95,37 +119,47 @@ struct Index {
 
   // ---------- Sub-view builders ----------
 
+  /**
+   * Kartu "Sholat Berikutnya" versi KECIL/COMPACT (permintaan user):
+   * label kecil di kiri, nama+jam dan countdown di kanan — hanya ~34px tinggi
+   * sehingga daftar 5 waktu muat lebih lega di layar bulat watch.
+   */
   @Builder
   nextPrayerCard() {
-    Column({ space: 2 }) {
-      Text('SHOLAT BERIKUTNYA')
-        .fontSize(10)
+    Row() {
+      Text('NEXT')
+        .fontSize(9)
         .fontWeight(FontWeight.Bold)
         .fontColor(AppColors.ACCENT)
-        .letterSpacing(1.2)
+        .letterSpacing(1)
+        .margin({ right: 8 })
 
-      Text(this.vm.nextPrayerName.length > 0 ? this.vm.nextPrayerName : '—')
-        .fontSize(20)
-        .fontWeight(FontWeight.Bold)
-        .fontColor(AppColors.TEXT_PRIMARY)
+      Column({ space: 1 }) {
+        Text(`${this.vm.nextPrayerName.length > 0 ? this.vm.nextPrayerName : '—'} · ${this.vm.nextPrayerTime}`)
+          .fontSize(13)
+          .fontWeight(FontWeight.Bold)
+          .fontColor(AppColors.TEXT_PRIMARY)
+          .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
 
-      Text(this.vm.nextPrayerTime)
-        .fontSize(14)
-        .fontColor(AppColors.TEXT_SECONDARY)
-
-      // Countdown besar & jelas — update tiap detik via CountdownTimer hemat baterai.
-      Text(this.vm.countdownText)
-        .fontSize(17)
-        .fontWeight(FontWeight.Medium)
-        .fontColor(AppColors.ACCENT)
-        .margin({ top: 2 })
+        // Countdown update tiap detik via CountdownTimer hemat baterai.
+        Text(this.vm.countdownText)
+          .fontSize(12)
+          .fontWeight(FontWeight.Medium)
+          .fontColor(AppColors.ACCENT)
+          .fontFeature('"tnum" on')
+      }
+      .alignItems(HorizontalAlign.Start)
+      .layoutWeight(1)
     }
     .width('92%')
-    .padding({ top: 10, bottom: 10 })
+    .height(40)
+    .padding({ left: 14, right: 14 })
     .backgroundColor(AppColors.CARD)
-    .borderRadius(20)
+    .borderRadius(16)
     .border({ width: 1, color: AppColors.BORDER_DARK_BLUE, style: BorderStyle.Solid })
-    .margin({ top: 8, bottom: 6 })
+    .margin({ top: 4, bottom: 4 })
+    .alignItems(VerticalAlign.Center)
   }
 
   @Builder
@@ -162,8 +196,12 @@ struct Index {
         .textAlign(TextAlign.Center)
         .maxLines(3)
         .textOverflow({ overflow: TextOverflow.Ellipsis })
-      // Tombol retry hanya untuk kegagalan API (bukan penolakan permission).
-      if (this.vm.loadState === LoadState.ERROR_API) {
+      // Tombol "Coba Lagi" kini MEMANG mengulang pencarian dari awal:
+      // forceRefresh=true melewati cache harian & mengambil ulang koordinat
+      // GPS terbaru (dulu tombol ini terasa mati karena membentur negative
+      // cache — sumber keluhan user "waktu muat habis").
+      if (this.vm.loadState === LoadState.ERROR_API ||
+          this.vm.loadState === LoadState.ERROR_NO_PERMISSION) {
         Button('Coba Lagi')
           .fontSize(12)
           .height(28)
@@ -171,7 +209,7 @@ struct Index {
           .fontColor(AppColors.BG)
           .onClick(() => {
             const ctx: common.UIAbilityContext | undefined = abilityContextOf(this.getUIContext());
-            this.vm.retry(ctx);
+            this.vm.refresh(ctx);
           })
       }
     }

@@ -1,25 +1,23 @@
 /**
  * PrayerViewModel.ets
  * -------------------
- * Orkestrator state halaman utama (pola MVVM ringan):
- *  onboarding permission -> lokasi -> API (cache-first) -> jadwal + countdown
- *  -> jadwalkan ReminderAgent H-10 menit.
+ * Orkestrator state halaman utama (pola MVVM ringan) — LOGIKA DESAIN AWAL:
+ *  onboarding permission -> lokasi (GPS) -> Aladhan API (+ cache harian)
+ *  -> jadwal + countdown + JAM SAAT INI -> jadwalkan ReminderAgent H-10 menit.
  * Semua error dikumpulkan ke field `errorMessage` agar UI bisa menampilkan
  * pesan yang jelas (izin ditolak / gagal memuat jadwal).
  *
- * ANTI-"LOADING TERUS" (laporan user: aplikasi mentok di "Memuat jadwal
- * sholat…"). Empat lapis pertahanan, semuanya teruji terhadap kondisi nyata
- * wearable Huawei Watch (relay Bluetooth lambat, GPS lama, MyQuran kadang
- * membalas "Data not found" untuk tanggal hari ini):
- *  1. hydrateFromCache() dijalankan PALING AWAL — bila ada jadwal tersimpan,
- *     UI langsung READY seketika tanpa menunggu permission/GPS/API.
- *  2. Setiap tahap sistem (permission dialog, GPS fix, reverse geocode)
- *     dibungkus withTimeout() sendiri-sendiri — tidak ada satu pun await
- *     yang bisa menggantung tanpa batas.
- *  3. DEADLINE keseluruhan bootstrap (BOOTSTRAP_DEADLINE_MS) sebagai pagar
- *     terakhir; saat tembus, safety net jadwal default Jakarta disajikan.
- *  4. Blok finally DIJAMIN mengubah state keluar dari LOADING — layar
- *     loading tidak mungkin permanen lagi.
+ * PERBAIKAN KELUHAN USER ("waktu muat habis" & "Coba Lagi" tidak mencari lagi):
+ *  1. hydrateFromCache() dijalankan PALING AWAL — jadwal tersimpan tampil
+ *     seketika tanpa menunggu permission/GPS/API.
+ *  2. Setiap tahap sistem dibungkus withDeadline() — tidak ada await yang
+ *     menggantung; blok finally DIJAMIN mengeluarkan state dari LOADING.
+ *  3. TIDAK ADA negative-cache jadwal default lagi: tombol Refresh / Coba
+ *     Lagi (refresh()) selalu melewati cache, mengambil ulang koordinat GPS
+ *     terbaru (user bisa berpindah tempat), dan sungguh-sungguh memanggil
+ *     API Aladhan dari awal.
+ *  4. currentClock di-update tiap tick CountdownTimer -> jam saat ini tampil
+ *     dan berdetak setiap detik tanpa timer tambahan.
  */
 import { common } from '@kit.AbilityKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
@@ -57,16 +55,31 @@ export class PrayerViewModel {
   @Track nextPrayerName: string = '';
   @Track nextPrayerTime: string = '';
   @Track countdownText: string = '--';
+  /** JAM SAAT INI "HH:mm:ss" — di-update tiap tick countdown (lihat onTick). */
+  @Track currentClock: string = '--:--:--';
+  /** true selama proses refresh manual berjalan (mencegah tap ganda). */
+  @Track isRefreshing: boolean = false;
 
   private geo: GeoInfo | null = null;
   private timer: CountdownTimer = new CountdownTimer((remainingMs: number) => {
     this.countdownText = formatCountdown(remainingMs);
+    // Perbarui jam saat ini pada tick yang sama — nol biaya timer tambahan
+    // (satu-satunya sumber tick adalah CountdownTimer hemat baterai).
+    this.currentClock = PrayerViewModel.formatClock(new Date());
     if (remainingMs <= 0) {
       // Waktu sholat tiba -> hitung ulang target berikutnya.
       this.recomputeNextPrayer();
     }
   });
   private refreshTimerId: number = -1;
+
+  /** Format HH:mm:ss dengan zero-padding (digit tetap agar tidak bergeser). */
+  static formatClock(d: Date): string {
+    const hh: string = d.getHours().toString().padStart(2, '0');
+    const mm: string = d.getMinutes().toString().padStart(2, '0');
+    const ss: string = d.getSeconds().toString().padStart(2, '0');
+    return `${hh}:${mm}:${ss}`;
+  }
 
   /** Entry point dari aboutToAppear/onPageShow. */
   async bootstrap(context?: common.UIAbilityContext): Promise<void> {
@@ -90,8 +103,10 @@ export class PrayerViewModel {
       const de = deadlineErr as Error;
       hilog.warn(DOMAIN, TAG, 'Bootstrap deadline hit: %{public}s', de.message ?? String(deadlineErr));
       if (this.schedule.length === 0) {
-        // Belum ada apa pun untuk ditampilkan -> safety net default Jakarta.
-        this.showDefaultSchedule('Waktu muat habis — menampilkan jadwal default Jakarta.');
+        // Belum ada data apa pun untuk ditampilkan -> beri pesan error yang
+        // jelas + tombol Refresh (desain awal: tidak ada jadwal default).
+        this.loadState = LoadState.ERROR_API;
+        this.errorMessage = 'Waktu muat habis. Tekan Refresh untuk mencari jadwal lagi.';
       } else {
         // Data cache sudah tampil — cukup beri catatan, JANGAN turunkan mutu
         // tampilan hanya karena pembaruan jaringan terlambat.
@@ -100,10 +115,9 @@ export class PrayerViewModel {
     } finally {
       // ── JAMINAN FINAL: state TIDAK BOLEH LOADING lagi setelah bootstrap ──
       if (this.loadState === LoadState.LOADING) {
-        if (this.schedule.length > 0) {
-          this.loadState = LoadState.READY;
-        } else {
-          this.showDefaultSchedule('Gagal memuat jadwal — menampilkan jadwal default Jakarta.');
+        this.loadState = this.schedule.length > 0 ? LoadState.READY : LoadState.ERROR_API;
+        if (this.schedule.length === 0 && this.errorMessage.length === 0) {
+          this.errorMessage = 'Gagal memuat jadwal. Tekan Refresh untuk mencoba lagi.';
         }
       }
       this.startPeriodicRefresh();
@@ -130,10 +144,9 @@ export class PrayerViewModel {
     if (!granted) {
       this.loadState = LoadState.ERROR_NO_PERMISSION;
       this.errorMessage = 'Izin lokasi ditolak. Aktifkan lewat Settings > Apps > MySholat agar jadwal sesuai kotamu.';
-      // Tetap tampilkan jadwal cache/default Jakarta supaya watch berguna.
-      if (this.schedule.length === 0) {
-        this.showDefaultSchedule(this.errorMessage);
-      }
+      // Watch tetap berguna: LocationService akan memakai koordinat default
+      // Jakarta, namun fetch TIDAK dijalankan saat permission jelas ditolak —
+      // user melihat pesan + tombol Refresh untuk mencoba setelah mengaktifkan izin.
       return;
     }
 
@@ -146,18 +159,18 @@ export class PrayerViewModel {
 
     // 2) DETEKSI LOKASI (+ reverse geocoding nama kota).
     //    LocationService internal sudah ber-timeout (locatingTimeoutMs 10s +
-    //    wrapper 15s + fallback cache/default) — dibatasi 12s di sini agar
-    //    masih ada jatah waktu untuk langkah API sebelum deadline bootstrap.
+    //    wrapper 15s + fallback cache/default Jakarta) — dibatasi 12s di sini.
     try {
       const geo: GeoInfo = await this.withDeadline<GeoInfo>(LocationService.getGeoInfo(), 12000);
       this.geo = geo;
       this.cityName = geo.cityName;
     } catch (geoErr) {
-      // Lokasi gagal total -> fetch TETAP jalan dengan cityId default Jakarta.
-      hilog.warn(DOMAIN, TAG, 'Geolocation unavailable; using cityId-only fetch.');
+      // Lokasi gagal total -> fetch tetap jalan dengan koordinat terakhir/
+      // default yang tersimpan di LocationService (lihat getGeoInfo()).
+      hilog.warn(DOMAIN, TAG, 'Geolocation unavailable; using last-known coords.');
     }
 
-    // 3) AMBIL JADWAL: cache-first -> MyQuran -> Aladhan (lihat PrayerApiService).
+    // 3) AMBIL JADWAL: cache harian -> Aladhan via koordinat (PrayerApiService).
     await this.fetchScheduleAndRemind();
   }
 
@@ -171,27 +184,16 @@ export class PrayerViewModel {
       this.recomputeNextPrayer();
       const lastDate: string = await preference.loadLastFetchDate();
       if (lastDate === PrayerApiService.todayKey()) {
-        if (sched.isDefault === true) {
-          // Negative cache hari ini: sajikan seketika + banner peringatan.
-          this.loadState = LoadState.ERROR_API;
-          this.errorMessage = 'Gagal memuat jadwal dari internet — menampilkan jadwal standar Jakarta.';
-        } else {
-          this.loadState = LoadState.READY;
-        }
+        // Cache hari ini (desain awal tidak lagi memakai negative-cache
+        // default-jakarta; flag lama dari versi sebelumnya tetap aman
+        // dibaca sebagai data biasa).
+        this.loadState = LoadState.READY;
       }
       // Cache basi -> tetap tampilkan dulu; pipeline jaringan akan
       // menaikkannya ke READY/ERROR nanti (watch tidak pernah blank).
     } catch (err) {
       hilog.warn(DOMAIN, TAG, 'hydrateFromCache parse failed');
     }
-  }
-
-  /** Sajikan jadwal default Kemenag Jakarta + banner (safety net anti-blank). */
-  private showDefaultSchedule(message: string): void {
-    this.schedule = PrayerApiService.buildDefaultSchedule().toItems();
-    this.recomputeNextPrayer();
-    this.loadState = LoadState.ERROR_API;
-    this.errorMessage = message;
   }
 
   /** Balut promise apapun dengan deadline — menolak (reject) saat tembus. */
@@ -211,24 +213,35 @@ export class PrayerViewModel {
   }
 
   /** Ambil jadwal + jadwalkan reminder H-10 menit. */
-  private async fetchScheduleAndRemind(): Promise<void> {
-    // geo boleh null (mis. lokasi gagal/telat) — orkestrator tetap jalan
-    // dengan cityId default Jakarta, jadi tidak ada early-return yang
-    // membuat state tertahan LOADING.
-    const geo: GeoInfo | null = this.geo;
+  private async fetchScheduleAndRemind(forceRefresh: boolean = false): Promise<void> {
+    // Sumber tunggal desain awal: Aladhan via koordinat GPS. Bila lokasi
+    // belum tersedia (GPS gagal/telat), LocationService sudah menyediakan
+    // fallback koordinat default Jakarta di dalam getGeoInfo().
+    let geo: GeoInfo | null = this.geo;
+    if (forceRefresh) {
+      // REFRESH MANUAL (user mungkin baru berpindah tempat): ambil ulang
+      // koordinat TERBARU dari GPS, jangan pakai hasil bootstrap lama.
+      try {
+        geo = await this.withDeadline<GeoInfo>(LocationService.getGeoInfo(), 12000);
+        this.geo = geo;
+        this.cityName = geo.cityName;
+      } catch (geoErr) {
+        hilog.warn(DOMAIN, TAG, 'Refresh re-locate failed; using last known coords.');
+      }
+    }
 
-    // Orkestrator cache-first: MyQuran (cityId) -> Aladhan (lat/lon) -> stale.
-    const cityId: string = await preference.loadSelectedCityId();
     const lat: number | undefined = geo !== null ? geo.latitude : undefined;
     const lon: number | undefined = geo !== null ? geo.longitude : undefined;
     const result: PrayerFetchResult =
-      await PrayerApiService.getTodaysPrayerTimes(cityId, lat, lon);
+      await PrayerApiService.getTodaysPrayerTimes(lat, lon, forceRefresh);
 
     if (result.schedule === null) {
-      // Tidak ada data sama sekali (jaringan gagal & cache kosong) —
-      // safety net default Jakarta agar watch tidak mentok loading.
+      // Jaringan gagal & cache kosong — tampilkan pesan error; tombol Refresh
+      // tetap tersedia untuk mencoba lagi dari nol (tanpa negative cache).
       hilog.error(DOMAIN, TAG, 'All sources failed: %{public}s', result.errorMessage);
-      this.showDefaultSchedule('Gagal memuat jadwal. Periksa koneksi Bluetooth/Wi-Fi lalu coba lagi.');
+      this.loadState = LoadState.ERROR_API;
+      this.errorMessage = result.errorMessage.length > 0 ? result.errorMessage
+        : 'Gagal memuat jadwal. Periksa koneksi lalu tekan Refresh.';
       return;
     }
 
@@ -288,9 +301,48 @@ export class PrayerViewModel {
     this.schedule = [...this.schedule]; // trigger update List
   }
 
-  /** Retry manual dari tombol di UI (saat ERROR_API). */
-  async retry(context?: common.UIAbilityContext): Promise<void> {
-    await this.bootstrap(context);
+  /**
+   * REFRESH MANUAL — tombol "Refresh" di UI.
+   * Berjalan TANPA negative cache & TANPA deadline bootstrap yang ketat:
+   *  1. Lewati cache harian sepenuhnya (forceRefresh=true).
+   *  2. Ambil ulang koordinat GPS terbaru (user mungkin berpindah tempat).
+   *  3. Fetch Aladhan -> persist -> jadwalkan ulang reminder.
+   * Flag `isRefreshing` mencegah tap ganda; jam saat ini tetap jalan karena
+   * CountdownTimer tidak pernah disetop selama proses ini.
+   */
+  async refresh(context?: common.UIAbilityContext): Promise<void> {
+    if (this.isRefreshing) { return; }
+    this.isRefreshing = true;
+    // Bersihkan pesan error lama agar banner tidak membingungkan saat retry.
+    this.errorMessage = '';
+    try {
+      // Bila permission belum pernah diminta (context tersedia & state awal),
+      // minta lagi sekalian — dialog dibatasi 8s seperti di bootstrap.
+      if (context !== undefined && this.loadState === LoadState.ERROR_NO_PERMISSION) {
+        let granted: boolean = false;
+        try {
+          granted = await this.withDeadline<boolean>(
+            PermissionService.requestLocationPermissions(context), 8000);
+        } catch (permErr) {
+          granted = false;
+        }
+        if (!granted) {
+          this.errorMessage = 'Izin lokasi masih ditolak. Aktifkan lewat Settings > Apps > MySholat.';
+          return;
+        }
+        this.loadState = LoadState.LOADING;
+      }
+      await this.fetchScheduleAndRemind(true);
+    } finally {
+      this.isRefreshing = false;
+      // Jaminan: refresh tidak boleh meninggalkan layar loading kosong.
+      if (this.loadState === LoadState.LOADING) {
+        this.loadState = this.schedule.length > 0 ? LoadState.READY : LoadState.ERROR_API;
+        if (this.errorMessage.length === 0 && this.schedule.length === 0) {
+          this.errorMessage = 'Gagal memuat jadwal. Tekan Refresh untuk mencoba lagi.';
+        }
+      }
+    }
   }
 
   /** Deteksi pergantian hari: bila tanggal berubah, fetch ulang (ber-deadline). */
