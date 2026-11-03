@@ -120,11 +120,20 @@ export class NormalizedDailySchedule {
   ashar: string;      // "HH:mm"
   maghrib: string;    // "HH:mm"
   isya: string;       // "HH:mm"
-  /** Sumber data — informatif untuk log/debug ('myquran' | 'aladhan'). */
+  /** Sumber data — informatif untuk log/debug ('myquran' | 'aladhan' | 'default-jakarta'). */
   source: string;
+  /**
+   * NEGATIVE CACHING FLAG. true bila kedua API gagal hari ini dan yang
+   * disimpan adalah jadwal default Jakarta. Berkat flag ini, buka aplikasi
+   * berikutnya di hari yang sama tersaji SEKETIKA (0ms jaringan) dengan
+   * banner peringatan, alih-alih mengulang seluruh rantai request lambat
+   * yang membuat watch tampak "loading memuat jadwal sholat…" terus.
+   * Field opsional (?) agar cache lama bentukan versi sebelumnya tetap terbaca.
+   */
+  isDefault?: boolean;
 
   constructor(date: string, subuh: string, dzuhur: string, ashar: string,
-    maghrib: string, isya: string, source: string) {
+    maghrib: string, isya: string, source: string, isDefault?: boolean) {
     this.date = date;
     this.subuh = subuh;
     this.dzuhur = dzuhur;
@@ -132,6 +141,7 @@ export class NormalizedDailySchedule {
     this.maghrib = maghrib;
     this.isya = isya;
     this.source = source;
+    this.isDefault = isDefault === undefined ? false : isDefault;
   }
 
   /**
