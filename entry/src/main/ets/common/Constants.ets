@@ -40,6 +40,19 @@ export const HTTP_CONNECT_TIMEOUT_MS: number = 8000;
 export const HTTP_READ_TIMEOUT_MS: number = 8000;
 
 /**
+ * SAFETY NET — jadwal default Kemenag RI untuk Jakarta (perkiraan kasar).
+ * Dipakai PrayerApiService.buildDefaultSchedule() bila cache kosong DAN kedua
+ * API (MyQuran & Aladhan) gagal/timeout, sehingga watch tidak pernah mentok
+ * di layar "Memuat jadwal...". Nilai ini juga yang disimpan sebagai negative
+ * cache (isDefault=true) selama 1 hari penuh.
+ */
+export const FALLBACK_SUBUH: string = '04:44';
+export const FALLBACK_DZUHUR: string = '11:58';
+export const FALLBACK_ASHAR: string = '15:21';
+export const FALLBACK_MAGHRIB: string = '17:59';
+export const FALLBACK_ISYA: string = '19:10';
+
+/**
  * DEADLINE keseluruhan bootstrap() (ms). Jaminan keras: UI TIDAK boleh
  * terjebak di layar loading lebih dari ini — saat deadline tembus, ViewModel
  * menyajikan stale cache / jadwal default Kemenag Jakarta + banner error.
