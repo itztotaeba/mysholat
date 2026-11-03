@@ -19,7 +19,8 @@ import {
 } from '../model/PrayerModels.ets';
 import {
   MYQURAN_JADWAL_URL, ALADHAN_TIMINGS_URL,
-  HTTP_CONNECT_TIMEOUT_MS, HTTP_READ_TIMEOUT_MS
+  HTTP_CONNECT_TIMEOUT_MS, HTTP_READ_TIMEOUT_MS,
+  FALLBACK_SUBUH, FALLBACK_DZUHUR, FALLBACK_ASHAR, FALLBACK_MAGHRIB, FALLBACK_ISYA
 } from '../common/Constants.ets';
 import { preference } from './PreferenceService.ets';
 
