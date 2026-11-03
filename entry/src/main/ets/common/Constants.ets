@@ -2,31 +2,13 @@
  * Constants.ets
  * -------------
  * Pusat konstanta aplikasi "Pengingat Sholat" (Huawei Watch 5 / wearable).
- * Mengandung: endpoint API Aladhan, daftar waktu sholat, warna tema,
- * dan konstanta reminderAgentManager.
+ * Mengandung: endpoint API Aladhan, warna tema, dan konstanta reminderAgentManager.
  */
 
 /**
- * PRIMARY API — MyQuran (server Indonesia, payload kecil & responsif untuk watch).
- * Format: https://api.myquran.com/v2/sholat/jadwal/{id_kota}/{yyyy-mm-dd}
+ * SATU-SATUNYA API jadwal (desain awal, permintaan user) — Aladhan v1/timings.
+ * method=20 -> perhitungan Kementerian Agama RI. Koordinat dari GPS watch.
  */
-export const MYQURAN_JADWAL_URL: string =
-  'https://api.myquran.com/v2/sholat/jadwal/{cityId}/{date}';
-
-/** City ID default MyQuran untuk Jakarta (dipakai bila cityId belum diset user). */
-export const DEFAULT_CITY_ID: string = 'jakarta';
-
-/**
- * PERINGATAN VALIDASI API (diuji langsung, Nov 2026):
- * MyQuran v2 membalas HTTP 200 dengan {"status":false,"message":"Data not
- * found"} untuk tanggal yang tidak ada di basis datanya — termasuk tanggal
- * HARI INI pada beberapa periode. Bila dibiarkan, setiap buka aplikasi =
- * rangkaian request jaringan gagal (MyQuran -> Aladhan) lewat relay Bluetooth
- * Huawei Watch yang lambat, dan user melihat layar "Memuat jadwal sholat…"
- * sangat lama. Solusi: negative caching di PrayerApiService (lihat persist()).
- */
-
-/** FALLBACK API — Aladhan. method=20 -> Kementerian Agama RI. */
 export const ALADHAN_TIMINGS_URL: string =
   'https://api.aladhan.com/v1/timings?latitude={lat}&longitude={lon}&method=20';
 
@@ -40,22 +22,9 @@ export const HTTP_CONNECT_TIMEOUT_MS: number = 8000;
 export const HTTP_READ_TIMEOUT_MS: number = 8000;
 
 /**
- * SAFETY NET — jadwal default Kemenag RI untuk Jakarta (perkiraan kasar).
- * Dipakai PrayerApiService.buildDefaultSchedule() bila cache kosong DAN kedua
- * API (MyQuran & Aladhan) gagal/timeout, sehingga watch tidak pernah mentok
- * di layar "Memuat jadwal...". Nilai ini juga yang disimpan sebagai negative
- * cache (isDefault=true) selama 1 hari penuh.
- */
-export const FALLBACK_SUBUH: string = '04:44';
-export const FALLBACK_DZUHUR: string = '11:58';
-export const FALLBACK_ASHAR: string = '15:21';
-export const FALLBACK_MAGHRIB: string = '17:59';
-export const FALLBACK_ISYA: string = '19:10';
-
-/**
  * DEADLINE keseluruhan bootstrap() (ms). Jaminan keras: UI TIDAK boleh
  * terjebak di layar loading lebih dari ini — saat deadline tembus, ViewModel
- * menyajikan stale cache / jadwal default Kemenag Jakarta + banner error.
+ * menyajikan stale cache + banner error dengan tombol Refresh.
  */
 export const BOOTSTRAP_DEADLINE_MS: number = 15000;
 
@@ -76,8 +45,6 @@ export const PREF_KEY_LON: string = 'last_lon';
 export const PREF_KEY_CITY: string = 'last_city';
 export const PREF_KEY_DATE: string = 'last_date';           // alias lastFetchDate
 export const PREF_KEY_SCHEDULE: string = 'last_schedule';   // cachedSchedule (JSON string)
-/** City ID MyQuran pilihan user (mis. 'bandung'); default DEFAULT_CITY_ID bila kosong. */
-export const PREF_KEY_CITY_ID: string = 'selected_city_id';
 
 /** Nama kota default bila reverse geocoding gagal / offline. */
 export const DEFAULT_CITY: string = 'Jakarta Selatan';
